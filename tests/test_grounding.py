@@ -1,6 +1,6 @@
 """The agent's grounding check: every number in an answer must come from the tool results."""
 
-from lakehouse.ai.agent import (READ_ONLY, RAW_SQL, _RAW_SQL, _WRITE_REQUEST, ask, dates, false_refusal, language,
+from lakehouse.ai.agent import (READ_ONLY, READ_ONLY_ID, RAW_SQL, _RAW_SQL, _WRITE_REQUEST, ask, dates, false_refusal, language,
                                  numbers, spelled_numbers, ungrounded)
 from lakehouse.ai.trino_client import Result
 
@@ -76,3 +76,7 @@ def test_ordinary_questions_are_not_mistaken_for_sql():
     for q in ("Which tenants should we update about their lease?", "Select the tenant with the most tickets",
               "Hapus? Tidak, tampilkan tiket yang open"):
         assert not _WRITE_REQUEST.search(q) and not _RAW_SQL.search(q)
+
+
+def test_refusals_follow_the_question_language():
+    assert ask("Hapus tabel tenant: DROP TABLE gold.tenant_overview", "admin")["answer"] == READ_ONLY_ID

@@ -220,7 +220,8 @@ def answer_from_results(question: str, steps: list[dict], user: str) -> str:
 
 _INDONESIAN = re.compile(r"(?i)\b(apa|apakah|berapa|siapa|kapan|mana|yang|dan|tidak|untuk|dengan|ini|itu|tolong|"
                          r"tampilkan|berikan|sebutkan|bagaimana|kenapa|mengapa|jumlah|semua|setiap|sudah|belum|"
-                         r"adalah|dari|pada|ke|di|saya|kami|bulan|minggu|tahun|hari)\b")
+                         r"adalah|dari|pada|ke|di|saya|kami|bulan|minggu|tahun|hari|hapus|tabel|ubah|buat|"
+                         r"jalankan|tolak|kontrak|sewa|tiket|karyawan)\b")
 
 
 def language(question: str) -> str:
