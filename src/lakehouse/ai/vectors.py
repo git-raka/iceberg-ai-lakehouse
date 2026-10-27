@@ -113,8 +113,9 @@ def allowed_doc_ids(user: str) -> list[str]:
     return [r[0] for r in query(sql, user=user).rows]
 
 
-def search(question: str, user: str, k: int = 5) -> list[dict]:
-    """Top-k chunks by cosine similarity, restricted to documents the user may see."""
+def search(question: str, user: str, k: int = 5, tenants: list[str] | None = None) -> list[dict]:
+    """Top-k chunks by cosine similarity, restricted to documents the user may see and, when given, to
+    documents of these tenants (a question about T005 must not be answered from T012's lease)."""
     allowed = allowed_doc_ids(user)
     if not allowed:
         return []
@@ -122,7 +123,8 @@ def search(question: str, user: str, k: int = 5) -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
             "SELECT doc_id, tenant_id, file_name, chunk_no, text, 1 - (embedding <=> %s) AS score "
-            "FROM doc_chunk WHERE doc_id = ANY(%s) ORDER BY embedding <=> %s LIMIT %s",
-            (vec, allowed, vec, k)).fetchall()
+            "FROM doc_chunk WHERE doc_id = ANY(%s) AND (%s::text[] IS NULL OR tenant_id = ANY(%s)) "
+            "ORDER BY embedding <=> %s LIMIT %s",
+            (vec, allowed, tenants, tenants, vec, k)).fetchall()
     return [{"doc_id": r[0], "tenant_id": r[1], "file_name": r[2], "chunk_no": r[3], "text": r[4],
              "score": round(float(r[5]), 4)} for r in rows]

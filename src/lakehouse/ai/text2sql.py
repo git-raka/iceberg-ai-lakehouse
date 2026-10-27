@@ -66,6 +66,8 @@ def guard(sql: str) -> str:
     allowed = allowed_tables()
     for table in tree.find_all(exp.Table):
         name = table.name.lower()
+        if not name:
+            raise UnsafeSQL("table functions are not allowed")
         if name in ctes and not table.db:
             continue
         full = f"{table.db}.{name}".lower() if table.db else name
@@ -94,6 +96,10 @@ def generate_sql(question: str, user: str, error: str | None = None, previous: s
               "Return JSON {\"answerable\": true|false, \"reason\": \"...\", \"sql\": \"...\"}.\n\n"
               + schema_prompt())
     content = f"Question: {question}"
+    if user.startswith("tenant_"):  # row filters already limit the rows; this only resolves "my" and "our"
+        tid = user.removeprefix("tenant_").upper()
+        content += (f"\nThe question is asked by tenant {tid}: 'my', 'our', 'saya', 'kami' mean "
+                    f"tenant_id = '{tid}'.")
     if error:
         content += f"\n\nThe previous SQL failed.\nSQL: {previous}\nError: {error}\nReturn a corrected query."
     msg = llm.chat([{"role": "system", "content": system}, {"role": "user", "content": content}],

@@ -46,7 +46,7 @@ tables:
       tenant_id: tenant code
       file_name: source document
       lease_start: lease start date
-      lease_end: lease end date
+      lease_end: lease end date (NULL means the lease does not state an end date; such rows need review)
       monthly_fee_idr: monthly service fee in IDR
       days_to_expiry: days from today to lease_end (negative = expired)
       needs_review: true when the AI extraction failed validation and a person must check it
@@ -63,6 +63,9 @@ tables:
   gold.bus_latest_position:
     description: Latest known position, speed, battery and passengers of each electric shuttle bus.
     columns: {bus_id: bus code, route_id: route, event_time: time of the reading, lat: latitude, lon: longitude, speed_kmh: speed, battery_pct: battery level, passengers: passengers on board}
+  gold.document_chunk:
+    description: Indexed text of every document version, in chunks. Use it to list which documents exist per tenant; use document search, not SQL, for what a document says.
+    columns: {tenant_id: tenant code, file_name: "document file; contains lease_agreement or handover_certificate", chunk_no: chunk number, created_at: when it was indexed}
   silver.purchase_order:
     description: Individual purchase orders.
     columns: {po_id: purchase order number, vendor: vendor name, department: requesting department, amount: value in IDR, status: pending, approved or received, ordered_at: order date}
@@ -74,6 +77,10 @@ examples:
     sql: |
       SELECT tenant_id, lease_end, days_to_expiry FROM gold.contract_expiry
       WHERE days_to_expiry BETWEEN 0 AND 365 ORDER BY days_to_expiry
+  - question: Which tenants have no handover certificate?
+    sql: |
+      SELECT tenant_id FROM gold.tenant_overview WHERE tenant_id NOT IN
+        (SELECT tenant_id FROM gold.document_chunk WHERE file_name LIKE '%handover_certificate%')
   - question: Which lease ends soonest?
     sql: |
       SELECT tenant_id, lease_end, days_to_expiry, monthly_fee_idr FROM gold.contract_expiry

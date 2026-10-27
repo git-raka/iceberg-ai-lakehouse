@@ -52,9 +52,23 @@ fed back to the model.
 
 ## D. Agent and MCP
 
-The agent has three tools: `query_data` (C), `search_documents` (B) and `list_datasets`. It loops at most five
+The agent has three tools: `query_data` (C), `search_documents` (B) and `list_datasets`. It loops at most six
 times. Its system prompt tells it to answer from tool results only and to treat masked values (`***`, `NULL`)
 as restricted, never guessed.
+
+A 7B model does not follow a prompt reliably, so the rules that matter are code in `agent.py`, not prompt text:
+
+| Check | What it prevents |
+|---|---|
+| Write requests (`DROP`, `DELETE FROM`, ...) and raw SQL in a question are refused before the model sees them | An injected instruction making the agent claim it changed or dropped something |
+| An on-topic answer given without a tool makes the agent call the tool itself (`query_data`, or `search_documents` for what a document says) | Answers from memory, and "no data" answers when the data exists |
+| Document search is restricted to the tenants named in the question | Answering about one tenant from another tenant's lease |
+| Every number and every whole date in the answer must appear in the tool results | Invented values, including a date assembled from a day and a year found in different documents |
+| A refusal while the query returned visible values gets a second, tool-free answer from the results | Small models over-applying "restricted" |
+| For a tenant identity, results carry a note that only its own rows are visible | Presenting one row as a ranking of all tenants |
+| The reply language is detected from the question | Answers in a third language |
+
+Questions outside the estate's data get a short note on what the assistant can answer, with no tool call.
 
 The MCP server exposes `list_datasets`, `describe_table`, `run_sql` (guarded), `ask_data` (C) and
 `search_documents` (B). It runs as one identity chosen by an API key. Use stdio for a desktop client, or
