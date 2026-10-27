@@ -63,6 +63,15 @@ def bus_positions(user: str = Depends(identity)) -> dict:
     return run("SELECT * FROM gold.bus_latest_position ORDER BY bus_id", user)
 
 
+@app.get("/v1/share/tonnage")
+def shared_tonnage(days: int = 30, user: str = Depends(identity)) -> dict:
+    """Shared data product for external parties: trucks and net tons per tenant per day. The shape is a fixed
+    contract; which tenants a caller sees is decided by Trino (a vendor only gets the tenants it serves)."""
+    days = max(1, min(days, 366))
+    return run(f"SELECT tenant_id, day, trucks, net_tons FROM share.tonnage_daily "
+               f"WHERE day >= current_date - INTERVAL '{days}' DAY ORDER BY day, tenant_id", user, max_rows=10000)
+
+
 @app.post("/v1/sql")
 def sql(body: SQL, user: str = Depends(identity)) -> dict:
     """Read-only SQL over the semantic-model tables (checked, limited to 200 rows)."""
@@ -94,5 +103,6 @@ def chat_page() -> str:
     """The demo chat. Its identity menu carries the non-admin API keys from .env, which is why every port is
     published on 127.0.0.1 only; do not expose this page."""
     options = "\n".join(f'      <option value="{html.escape(key)}">{html.escape(user)}</option>'
-                        for key, user in settings().api_keys.items() if user != "admin")
+                        for key, user in settings().api_keys.items()
+                        if user != "admin" and not user.startswith("vendor_"))
     return (Path(__file__).with_name("chat.html")).read_text(encoding="utf-8").replace("<!-- IDENTITIES -->", options)

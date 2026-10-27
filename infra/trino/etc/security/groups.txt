@@ -1,4 +1,5 @@
 admins:admin,pipeline
 executives:executive
 finance:analyst_finance
+vendors:vendor_haulage
 tenants:tenant_t001,tenant_t002,tenant_t003,tenant_t004,tenant_t005,tenant_t006,tenant_t007,tenant_t008,tenant_t009,tenant_t010,tenant_t011,tenant_t012

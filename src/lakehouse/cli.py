@@ -104,6 +104,9 @@ def main() -> None:
     sub.add_parser("run-summary", help="steps and checks of the latest Dagster run")
     sub.add_parser("governance", help="run the same queries as four identities")
     sub.add_parser("timetravel", help="show Iceberg snapshots and CDC history of one tenant")
+    sub.add_parser("cube-demo", help="the shared data product through Cube REST/GraphQL and the Data API")
+    tok = sub.add_parser("cube-token", help="print a demo Cube API token for a Trino identity")
+    tok.add_argument("--user", default="executive")
     ask = sub.add_parser("ask", help="ask the agent a question")
     ask.add_argument("question")
     ask.add_argument("--user", default="executive")
@@ -135,6 +138,12 @@ def main() -> None:
         governance()
     elif a.cmd == "timetravel":
         timetravel()
+    elif a.cmd == "cube-demo":
+        from .cube_demo import demo
+        demo()
+    elif a.cmd == "cube-token":
+        from .cube_demo import token
+        print(token(a.user))
     elif a.cmd == "ask":
         from .ai.agent import ask as agent_ask
         r = agent_ask(a.question, a.user)

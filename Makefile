@@ -18,9 +18,10 @@ env: ## Create .env with random secrets (keeps an existing .env)
 	  for k in POSTGRES_PASSWORD S3_SECRET_KEY SUPERSET_SECRET_KEY SUPERSET_ADMIN_PASSWORD; do \
 	    sed -i "s|^$$k=.*|$$k=$$(openssl rand -hex 16)|" .env; done; \
 	  sed -i "s|^LAKEKEEPER_ENCRYPTION_KEY=.*|LAKEKEEPER_ENCRYPTION_KEY=$$(openssl rand -hex 24)|" .env; \
+	  sed -i "s|^CUBE_API_SECRET=.*|CUBE_API_SECRET=$$(openssl rand -hex 32)|" .env; \
 	  ka=admin-$$(openssl rand -hex 12); ke=exec-$$(openssl rand -hex 12); \
-	  kf=finance-$$(openssl rand -hex 12); kt=t003-$$(openssl rand -hex 12); \
-	  sed -i "s|^API_KEYS_JSON=.*|API_KEYS_JSON={\"$$ka\":\"admin\",\"$$ke\":\"executive\",\"$$kf\":\"analyst_finance\",\"$$kt\":\"tenant_t003\"}|" .env; \
+	  kf=finance-$$(openssl rand -hex 12); kt=t003-$$(openssl rand -hex 12); kv=haulage-$$(openssl rand -hex 12); \
+	  sed -i "s|^API_KEYS_JSON=.*|API_KEYS_JSON={\"$$ka\":\"admin\",\"$$ke\":\"executive\",\"$$kf\":\"analyst_finance\",\"$$kt\":\"tenant_t003\",\"$$kv\":\"vendor_haulage\"}|" .env; \
 	  sed -i "s|^MCP_API_KEY=.*|MCP_API_KEY=$$ke|" .env; \
 	  echo ".env created with random secrets and API keys (Superset admin password is in .env)"; fi
 
@@ -38,10 +39,10 @@ status: ## Show the services and their health
 	$(COMPOSE) ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}'
 
 down: ## Stop everything (data is kept)
-	$(COMPOSE) --profile tools down
+	$(COMPOSE) --profile tools --profile cube down
 
 clean: ## Stop everything and delete all data volumes, including the downloaded models
-	$(COMPOSE) --profile tools down -v
+	$(COMPOSE) --profile tools --profile cube down -v
 
 # ------------------------------------------------------------------------------------------- data
 
@@ -79,6 +80,18 @@ eval: ## Score text-to-SQL against the evaluation set
 sql: ## Open a Trino SQL shell: make sql [ROLE=tenant_t003]
 	$(COMPOSE) exec trino trino --user $(ROLE) --catalog iceberg
 
+# ------------------------------------------------------------------------------------------- optional: Cube
+
+cube-up: ## Start Cube: REST + GraphQL APIs and the Playground on http://localhost:4000
+	$(COMPOSE) --profile cube up -d cube
+	@echo "Playground: http://localhost:4000  (paste a token from: make cube-token ROLE=vendor_haulage)"
+
+cube-token: ## Print a demo Cube API token: make cube-token ROLE=vendor_haulage
+	@$(CLI) cube-token --user $(ROLE) 2>/dev/null
+
+cube-demo: ## The shared data product via Cube REST/GraphQL and the Data API, as a vendor and an executive
+	$(CLI) cube-demo
+
 # ------------------------------------------------------------------------------------------- development
 
 test: ## Run the unit tests (no services needed)
@@ -87,4 +100,4 @@ test: ## Run the unit tests (no services needed)
 logs: ## Follow the logs of one service: make logs S=flink-taskmanager
 	$(COMPOSE) logs -f --tail 100 $(S)
 
-.PHONY: help env up setup status down clean models seed pipeline increment superset governance timetravel ask eval sql test logs
+.PHONY: help env up setup status down clean models seed pipeline increment superset governance timetravel ask eval sql \n        cube-up cube-token cube-demo test logs

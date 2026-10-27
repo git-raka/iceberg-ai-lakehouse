@@ -1,0 +1,35 @@
+# Internal metric: service desk tickets per tenant and category (gold.ticket_sla).
+# Internal identities can read it; a vendor gets "Access Denied" from Trino.
+cubes:
+  - name: tickets
+    sql_table: iceberg.gold.ticket_sla
+    description: Service desk tickets with SLA breaches (more than 48 hours).
+
+    dimensions:
+      - name: id
+        sql: "concat(tenant_id, '|', category)"
+        type: string
+        primary_key: true
+        public: false
+
+      - name: tenant_id
+        sql: tenant_id
+        type: string
+
+      - name: category
+        sql: category
+        type: string
+        description: electricity, water, road, security, waste, permit or internet
+
+    measures:
+      - name: tickets
+        sql: tickets
+        type: sum
+
+      - name: open_tickets
+        sql: open_tickets
+        type: sum
+
+      - name: sla_breaches
+        sql: sla_breaches
+        type: sum

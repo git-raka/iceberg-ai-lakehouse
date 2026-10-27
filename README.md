@@ -23,6 +23,7 @@ actually fits in a lakehouse.
 | **AI-C** text-to-SQL | Grounded on a semantic model, SQL guard (sqlglot), evaluation set |
 | **AI-D** agent + MCP | Tool-calling agent with a grounding check; MCP server for any MCP client |
 | **BI** | Superset dashboard as code, with the AI assistant embedded in it |
+| **Data sharing** | A `share` data product for a fictional vendor, through a fixed REST API and (optional) Cube REST/GraphQL; the vendor sees only its tenants |
 
 ## End-to-end data flow
 
@@ -66,6 +67,7 @@ flowchart LR
     A2{{"AI-B · chunk + embed"}}
     G2[("gold.document_chunk")]
     VEC[("pgvector · doc_chunk<br/>HNSW index")]
+    SH[("share.tonnage_daily<br/>data product for vendors")]
   end
 
   subgraph GOV["6 · Governed access"]
@@ -77,6 +79,7 @@ flowchart LR
     API["Data API /v1"]
     AGT["AI-C text-to-SQL<br/>AI-D agent + chat UI"]
     MCP["MCP server<br/>(any MCP client)"]
+    CUBE["Cube REST + GraphQL<br/>(optional)"]
   end
 
   ERP --> CDC --> B1
@@ -97,14 +100,17 @@ flowchart LR
   S3 --> G1
   S3 --> A2 --> G2
   A2 --> VEC
+  G1 --> SH
 
   G1 --> TR
   S1 --> TR
   G2 --> TR
+  SH --> TR
   TR --> SUP
   TR --> API
   TR --> AGT
   TR --> MCP
+  TR -- "as the caller" --> CUBE
   VEC -. "doc_ids allowed by Trino" .-> AGT
   VEC -.-> MCP
 ```
@@ -148,6 +154,7 @@ takes 15 to 30 minutes, mostly downloads.
 | http://localhost:3001/ | Dagster: asset lineage, runs, checks |
 | http://localhost:8081/ | Flink: the streaming job |
 | http://localhost:8765/mcp | MCP server (streamable HTTP) |
+| http://localhost:4000 | Cube Playground, REST and GraphQL (optional: `make cube-up`) |
 
 All ports are bound to `127.0.0.1`. Keep it that way: the demo chat page carries the non-admin API keys in
 its identity menu so you can switch roles. Run `make help` to list every command.
@@ -223,6 +230,21 @@ against DNS rebinding. For a desktop client over stdio, use one of your keys fro
 The tools are `list_datasets`, `describe_table`, `run_sql` (read-only, guarded), `ask_data` and
 `search_documents`.
 
+**6. Share data with a vendor.** A fictional haulage vendor needs the daily tonnage of the two tenants it
+serves, T002 and T005, and nothing else. The data product `share.tonnage_daily` and two Trino rules give it
+exactly that, whichever API it uses:
+
+```bash
+make cube-up       # optional semantic layer: REST + GraphQL + Playground on http://localhost:4000
+make cube-demo     # the same request via Cube REST, Cube GraphQL and the Data API, as the vendor and the executive
+```
+
+The vendor gets T002 and T005, and the executive gets all 12 tenants. A vendor request for internal ticket
+metrics is denied by Trino. Requests without a token, with a forged token, or for an identity Cube does not
+serve are rejected with 403. For the Playground, paste a token from `make cube-token ROLE=vendor_haulage`.
+[docs/production.md](docs/production.md#serving-data-to-applications-internal-and-external) explains when to
+use which path, for internal applications and for external parties.
+
 ## Measured on a laptop
 
 Measured on a laptop with an RTX 5070 (8 GB) and 15 GB of RAM given to WSL. The data is the synthetic seed:
@@ -246,7 +268,7 @@ All containers together use about 9 to 10 GB of RAM while idle, and the models u
 ```
 docker-compose.yml        every service, pinned versions, memory limits
 Makefile                  the commands above
-infra/                    configuration per service (Trino rules, Spark, Flink job, Lakekeeper bootstrap, Superset)
+infra/                    configuration per service (Trino rules, Spark, Flink job, Lakekeeper bootstrap, Superset, Cube)
 src/lakehouse/
   sources/                synthetic ERP, weighbridge, tickets, PDFs, e-bus simulator
   pipeline/               bronze ingestion (CDC, files, documents) and silver/gold transforms (Spark)

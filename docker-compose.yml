@@ -19,6 +19,7 @@ x-app: &app
     # explicit psycopg2: SQLAlchemy 2.1 defaults to psycopg 3, which cannot bind parameters in Dagster's NOTIFY
     DAGSTER_PG_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/dagster
     SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+    CUBE_API_SECRET: ${CUBE_API_SECRET}
 
 services:
   # ---------------------------------------------------------------- storage & catalog
@@ -285,6 +286,31 @@ services:
       interval: 10s
       retries: 40
     mem_limit: 1g
+
+  # ---------------------------------------------------------------- optional: semantic layer API
+  cube:  # `make cube-up`: REST + GraphQL over gold/share, each request runs in Trino as its caller
+    <<: *restart
+    image: cubejs/cube:v1.8.8
+    profiles: ["cube"]
+    environment:
+      CUBEJS_DB_TYPE: trino
+      CUBEJS_DB_HOST: trino
+      CUBEJS_DB_PORT: 8080
+      CUBEJS_DB_PRESTO_CATALOG: iceberg
+      CUBEJS_DB_USER: cube-no-identity  # never used for queries (driverFactory sets the caller); has no grants
+      CUBEJS_API_SECRET: ${CUBE_API_SECRET}
+      CUBE_TRINO_USERS: executive,analyst_finance,vendor_haulage
+      CUBEJS_DEV_MODE: "true"  # enables the Playground UI on :4000; turn off outside a laptop
+      CUBEJS_CACHE_AND_QUEUE_DRIVER: memory
+      CUBEJS_TELEMETRY: "false"
+    volumes:
+      - ./infra/cube/cube.js:/cube/conf/cube.js:ro
+      - ./infra/cube/model:/cube/conf/model:ro
+    ports:
+      - "127.0.0.1:4000:4000"
+    depends_on:
+      trino: { condition: service_healthy }
+    mem_limit: 768m
 
   tools:
     <<: *app

@@ -13,6 +13,10 @@
     { "catalog": "system", "schema": "(metadata|jdbc)", "privileges": ["SELECT"] },
     { "catalog": "iceberg", "table": ".*\\$.*", "privileges": [] },
 
+    { "user": "vendor_haulage", "catalog": "iceberg", "schema": "share", "table": "tonnage_daily",
+      "privileges": ["SELECT"], "filter": "tenant_id IN ('T002', 'T005')" },
+    { "group": "vendors", "privileges": [] },
+
     { "group": "tenants", "catalog": "iceberg", "schema": "gold",
       "table": "(tenant_overview|weighbridge_daily|ticket_sla|contract_expiry|document_chunk)",
       "privileges": ["SELECT"],
@@ -34,7 +38,7 @@
         { "name": "pic_phone", "mask": "concat(substr(pic_phone, 1, 4), '****', substr(pic_phone, -2))" },
         { "name": "tax_id", "mask": "'***'" }
       ] },
-    { "group": "finance", "catalog": "iceberg", "schema": "(silver|gold)", "privileges": ["SELECT"] },
+    { "group": "finance", "catalog": "iceberg", "schema": "(silver|gold|share)", "privileges": ["SELECT"] },
     { "group": "finance", "privileges": [] },
 
     { "group": "executives", "catalog": "iceberg", "schema": "silver", "table": "employee", "privileges": ["SELECT"],
@@ -49,7 +53,7 @@
         { "name": "pic_phone", "mask": "concat(substr(pic_phone, 1, 4), '****', substr(pic_phone, -2))" },
         { "name": "tax_id", "mask": "'***'" }
       ] },
-    { "group": "executives", "catalog": "iceberg", "schema": "(silver|gold)", "privileges": ["SELECT"] },
+    { "group": "executives", "catalog": "iceberg", "schema": "(silver|gold|share)", "privileges": ["SELECT"] },
 
     { "privileges": [] }
   ]

@@ -71,6 +71,7 @@ flowchart LR
 | Bronze | `erp_*` (CDC rows), `weighbridge`, `ticket`, `document`, `ebus_telemetry`, `ingest_file_log` | PyIceberg (edge), Flink (stream) |
 | Silver | `tenant`, `plot`, `employee`, `asset`, `purchase_order` (MERGE), `weighbridge`, `ticket`, `ebus_telemetry`, `document_text`, `document_fields` | Spark, AI layer |
 | Gold | `tenant_overview`, `weighbridge_daily`, `ticket_sla`, `contract_expiry`, `procurement_monthly`, `headcount`, `fleet_daily`, `bus_latest_position`, `document_chunk` | Spark, AI layer |
+| Share | `tonnage_daily`: data products for parties outside the estate, with a fixed shape | Spark |
 
 ## Identity and governance
 
@@ -81,9 +82,10 @@ keys to Trino users, Superset connects as `executive`, and the pipeline runs as 
 | Identity | Sees |
 |---|---|
 | `admin` | everything |
-| `executive` | Silver and Gold; tenant contact details, tax IDs and employee contact details/national IDs masked |
-| `analyst_finance` | Silver and Gold; PII masked, national IDs and individual salaries hidden (NULL) |
+| `executive` | Silver, Gold and Share; tenant contact details, tax IDs and employee contact details/national IDs masked |
+| `analyst_finance` | Silver, Gold and Share; PII masked, national IDs and individual salaries hidden (NULL) |
 | `tenant_t003` | only its own rows in tenant-facing Gold tables and shared fleet data; nothing else |
+| `vendor_haulage` | `share.tonnage_daily` for tenants T002 and T005 only; nothing else |
 
 Iceberg metadata tables (`$files`, `$partitions` and so on) are readable by admins only: their column statistics
 (min and max values) would otherwise bypass the masks.

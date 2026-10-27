@@ -130,14 +130,26 @@ def gold() -> dict[str, int]:
             continue
         _sql(f"CREATE OR REPLACE TABLE gold.{name} USING iceberg AS {query}")
         counts[name] = s.table(f"gold.{name}").count()
+
+    # Share: data products for parties outside the estate. A fixed, documented shape that does not change when
+    # internal tables do; who sees which rows is decided per identity in Trino (see docs/production.md).
+    _sql("CREATE NAMESPACE IF NOT EXISTS share")
+    for name, query in SHARE.items():
+        if table_exists(SHARE_NEEDS[name]):
+            _sql(f"CREATE OR REPLACE TABLE share.{name} USING iceberg AS {query}")
+            counts[f"share.{name}"] = s.table(f"share.{name}").count()
     return counts
+
+
+SHARE = {"tonnage_daily": "SELECT tenant_id, day, trucks, net_tons FROM gold.weighbridge_daily"}
+SHARE_NEEDS = {"tonnage_daily": "gold.weighbridge_daily"}
 
 
 def maintenance(retain_days: int = 7) -> dict[str, int]:
     """Compact small files and expire old snapshots (time travel window = retain_days)."""
     s = spark()
     done = 0
-    for ns in ("bronze", "silver", "gold"):
+    for ns in ("bronze", "silver", "gold", "share"):
         for row in s.sql(f"SHOW TABLES IN {ns}").collect():
             name = f"lakehouse.{ns}.{row.tableName}"
             _sql(f"CALL lakehouse.system.rewrite_data_files(table => '{name}')")
