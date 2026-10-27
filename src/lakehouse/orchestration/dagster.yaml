@@ -1,0 +1,11 @@
+storage:
+  postgres:
+    postgres_url:
+      env: DAGSTER_PG_URL
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 1
+telemetry:
+  enabled: false

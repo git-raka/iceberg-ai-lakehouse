@@ -1,0 +1,95 @@
+# Semantic model: what the business means by each table and column. The text-to-SQL prompt and the
+# agent are grounded on this file; tables not listed here cannot be queried by generated SQL.
+dialect: trino
+catalog: iceberg
+notes:
+  - Amounts are in Indonesian rupiah (IDR). Weights in kilograms unless the column says tons.
+  - Tenant IDs look like T001..T012; plot IDs look like A-01.
+  - Today is current_date. Use date arithmetic like current_date - INTERVAL '30' DAY.
+  - This month means date_trunc('month', current_date); last month means date_trunc('month', current_date) - INTERVAL '1' MONTH.
+  - Masked or hidden values (***, NULL) are governance, not missing data; never try to work around them.
+  - Tons weighed, tonnage or "ditimbang" means net_tons in gold.weighbridge_daily; filter its day column for any time window (this week, last 7 days). Use net_tons_30d in gold.tenant_overview only for "last 30 days". Tare weight is not in Gold.
+  - Do not add lease conditions to questions that do not ask about leases.
+  - Gold tables are already aggregated. To count tickets, trucks or purchase orders use sum() of their count columns (tickets, open_tickets, trucks, po_count), never count(*).
+  - Personal data of employees (names, national IDs, individual salaries, contact details) is restricted and not available here; only department totals in gold.headcount are.
+tables:
+  gold.tenant_overview:
+    description: One row per tenant with plot, lease dates from the signed lease, open service tickets and tonnage of the last 30 days.
+    columns:
+      tenant_id: tenant code
+      name: company name
+      sector: industry sector
+      plot_id: leased plot
+      zone: estate zone of the plot
+      area_m2: plot area in square metres
+      status: tenant status
+      lease_start: lease start date (extracted from the lease agreement by AI)
+      lease_end: lease end date (extracted by AI; NULL when the lease does not state it)
+      monthly_fee_idr: monthly service fee in IDR (extracted by AI)
+      open_tickets: service tickets still open
+      net_tons_30d: net tons weighed at the gate in the last 30 days
+  gold.weighbridge_daily:
+    description: Trucks and net tons weighed per tenant per day at the estate weighbridge.
+    columns: {tenant_id: tenant code, day: date, trucks: number of trucks, net_tons: net weight in tons}
+  gold.ticket_sla:
+    description: Service desk tickets per tenant and category, with resolution time and SLA breaches (more than 48 hours).
+    columns:
+      tenant_id: tenant code
+      category: electricity, water, road, security, waste, permit or internet
+      tickets: number of tickets
+      open_tickets: tickets still open
+      avg_resolution_hours: average hours to close
+      sla_breaches: tickets that took or have been open longer than 48 hours
+  gold.contract_expiry:
+    description: Latest lease agreement per tenant with dates and fee extracted by AI, days until it expires and a review flag.
+    columns:
+      tenant_id: tenant code
+      file_name: source document
+      lease_start: lease start date
+      lease_end: lease end date
+      monthly_fee_idr: monthly service fee in IDR
+      days_to_expiry: days from today to lease_end (negative = expired)
+      needs_review: true when the AI extraction failed validation and a person must check it
+      model: LLM that extracted the fields
+  gold.procurement_monthly:
+    description: Purchase orders per department per month.
+    columns: {department: estate department, month: first day of the month, po_count: purchase orders, total_amount_idr: total value in IDR}
+  gold.headcount:
+    description: Employees and total monthly salary per department.
+    columns: {department: estate department, headcount: employees, total_salary_idr: total monthly salary in IDR}
+  gold.fleet_daily:
+    description: Electric shuttle buses per day from IoT telemetry.
+    columns: {bus_id: bus code, day: date, readings: telemetry messages, avg_speed_kmh: average speed, min_battery_pct: lowest battery level, max_passengers: highest passenger count}
+  gold.bus_latest_position:
+    description: Latest known position, speed, battery and passengers of each electric shuttle bus.
+    columns: {bus_id: bus code, route_id: route, event_time: time of the reading, lat: latitude, lon: longitude, speed_kmh: speed, battery_pct: battery level, passengers: passengers on board}
+  silver.purchase_order:
+    description: Individual purchase orders.
+    columns: {po_id: purchase order number, vendor: vendor name, department: requesting department, amount: value in IDR, status: pending, approved or received, ordered_at: order date}
+  silver.asset:
+    description: Estate assets such as gensets, pumps, transformers and chargers.
+    columns: {asset_id: asset code, asset_type: kind of asset, zone: location zone, purchase_value: value in IDR, purchased_at: purchase date, status: active or maintenance}
+examples:
+  - question: Which tenants have a lease that ends within the next 12 months?
+    sql: |
+      SELECT tenant_id, lease_end, days_to_expiry FROM gold.contract_expiry
+      WHERE days_to_expiry BETWEEN 0 AND 365 ORDER BY days_to_expiry
+  - question: Which lease ends soonest?
+    sql: |
+      SELECT tenant_id, lease_end, days_to_expiry, monthly_fee_idr FROM gold.contract_expiry
+      WHERE days_to_expiry >= 0 ORDER BY days_to_expiry LIMIT 1
+  - question: Total net tons per tenant in the last 7 days
+    sql: |
+      SELECT tenant_id, sum(net_tons) AS net_tons FROM gold.weighbridge_daily
+      WHERE day >= current_date - INTERVAL '7' DAY GROUP BY tenant_id ORDER BY net_tons DESC
+  - question: How many tons did tenant T005 weigh this week?
+    sql: |
+      SELECT tenant_id, sum(net_tons) AS net_tons FROM gold.weighbridge_daily
+      WHERE tenant_id = 'T005' AND day >= date_trunc('week', current_date) GROUP BY tenant_id
+  - question: Total purchase order value per department this month
+    sql: |
+      SELECT department, sum(total_amount_idr) AS total_idr FROM gold.procurement_monthly
+      WHERE month = date_trunc('month', current_date) GROUP BY department ORDER BY total_idr DESC
+  - question: Which ticket categories breach the SLA most often?
+    sql: |
+      SELECT category, sum(sla_breaches) AS breaches FROM gold.ticket_sla GROUP BY category ORDER BY breaches DESC

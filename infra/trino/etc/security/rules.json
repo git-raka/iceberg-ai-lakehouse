@@ -1,0 +1,56 @@
+{
+  "catalogs": [
+    { "group": "admins", "catalog": ".*", "allow": "all" },
+    { "catalog": "iceberg", "allow": "read-only" },
+    { "catalog": "system", "allow": "read-only" }
+  ],
+  "schemas": [
+    { "group": "admins", "schema": ".*", "owner": true },
+    { "schema": ".*", "owner": false }
+  ],
+  "tables": [
+    { "group": "admins", "privileges": ["SELECT", "INSERT", "DELETE", "UPDATE", "OWNERSHIP", "GRANT_SELECT"] },
+    { "catalog": "system", "schema": "(metadata|jdbc)", "privileges": ["SELECT"] },
+    { "catalog": "iceberg", "table": ".*\\$.*", "privileges": [] },
+
+    { "group": "tenants", "catalog": "iceberg", "schema": "gold",
+      "table": "(tenant_overview|weighbridge_daily|ticket_sla|contract_expiry|document_chunk)",
+      "privileges": ["SELECT"],
+      "filter": "tenant_id = upper(replace(current_user, 'tenant_', ''))" },
+    { "group": "tenants", "catalog": "iceberg", "schema": "gold",
+      "table": "(bus_latest_position|fleet_daily)", "privileges": ["SELECT"] },
+    { "group": "tenants", "privileges": [] },
+
+    { "group": "finance", "catalog": "iceberg", "schema": "silver", "table": "employee", "privileges": ["SELECT"],
+      "columns": [
+        { "name": "national_id", "mask": "CAST(NULL AS VARCHAR)" },
+        { "name": "salary", "mask": "CAST(NULL AS DECIMAL(14,2))" },
+        { "name": "email", "mask": "regexp_replace(email, '^(.).*(@.*)$', '$1***$2')" },
+        { "name": "phone", "mask": "concat(substr(phone, 1, 4), '****', substr(phone, -2))" }
+      ] },
+    { "group": "finance", "catalog": "iceberg", "schema": "silver", "table": "tenant", "privileges": ["SELECT"],
+      "columns": [
+        { "name": "pic_email", "mask": "regexp_replace(pic_email, '^(.).*(@.*)$', '$1***$2')" },
+        { "name": "pic_phone", "mask": "concat(substr(pic_phone, 1, 4), '****', substr(pic_phone, -2))" },
+        { "name": "tax_id", "mask": "'***'" }
+      ] },
+    { "group": "finance", "catalog": "iceberg", "schema": "(silver|gold)", "privileges": ["SELECT"] },
+    { "group": "finance", "privileges": [] },
+
+    { "group": "executives", "catalog": "iceberg", "schema": "silver", "table": "employee", "privileges": ["SELECT"],
+      "columns": [
+        { "name": "national_id", "mask": "concat('************', substr(national_id, -4))" },
+        { "name": "email", "mask": "regexp_replace(email, '^(.).*(@.*)$', '$1***$2')" },
+        { "name": "phone", "mask": "concat(substr(phone, 1, 4), '****', substr(phone, -2))" }
+      ] },
+    { "group": "executives", "catalog": "iceberg", "schema": "silver", "table": "tenant", "privileges": ["SELECT"],
+      "columns": [
+        { "name": "pic_email", "mask": "regexp_replace(pic_email, '^(.).*(@.*)$', '$1***$2')" },
+        { "name": "pic_phone", "mask": "concat(substr(pic_phone, 1, 4), '****', substr(pic_phone, -2))" },
+        { "name": "tax_id", "mask": "'***'" }
+      ] },
+    { "group": "executives", "catalog": "iceberg", "schema": "(silver|gold)", "privileges": ["SELECT"] },
+
+    { "privileges": [] }
+  ]
+}

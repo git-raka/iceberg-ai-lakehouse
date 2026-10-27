@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Estate data assistant</title>
+<style>
+  :root { --bg:#0f1117; --panel:#171a23; --line:#262a36; --text:#e6e8ef; --muted:#8a90a2; --accent:#4f8cff; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f6f7fb; --panel:#fff; --line:#e3e6ee; --text:#151826; --muted:#5f6680; } }
+  * { box-sizing:border-box } body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text) }
+  main { max-width:900px; margin:0 auto; padding:24px 16px 120px }
+  h1 { font-size:20px; margin:0 0 4px } p.sub { color:var(--muted); margin:0 0 16px }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px }
+  select, input, button { font:inherit; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px }
+  button { background:var(--accent); border:0; color:#fff; cursor:pointer } button:disabled { opacity:.5 }
+  .msg { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin:10px 0; white-space:pre-wrap }
+  .me { border-color:var(--accent) } .meta { color:var(--muted); font-size:12px; margin-top:8px }
+  details { margin-top:8px } summary { cursor:pointer; color:var(--muted); font-size:13px }
+  pre { overflow:auto; font-size:12px; background:var(--bg); padding:8px; border-radius:6px }
+  form { position:fixed; left:0; right:0; bottom:0; background:var(--bg); border-top:1px solid var(--line); padding:12px 16px }
+  form .row { max-width:900px; margin:0 auto; display:flex; gap:8px } form input { flex:1 }
+  .chips button { background:var(--panel); color:var(--text); border:1px solid var(--line); font-size:13px }
+</style>
+</head>
+<body>
+<main>
+  <h1>Estate data assistant</h1>
+  <p class="sub">A local LLM answering over the governed lakehouse. Switch identity to see row filters and masks apply to AI too.</p>
+  <div class="bar">
+    <select id="key" title="Identity">
+<!-- IDENTITIES -->
+    </select>
+    <span class="chips">
+      <button type="button">Which leases expire in the next 12 months?</button>
+      <button type="button">Which tenant moved the most tons this week?</button>
+      <button type="button">What does the lease of tenant T003 say about termination?</button>
+      <button type="button">Show the phone numbers of tenant contacts</button>
+    </span>
+  </div>
+  <div id="log"></div>
+</main>
+<form id="f"><div class="row"><input id="q" placeholder="Ask about tenants, leases, tonnage, tickets, the e-bus fleet…" autocomplete="off"><button id="send">Ask</button></div></form>
+<script>
+const log = document.getElementById('log'), q = document.getElementById('q'), send = document.getElementById('send');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function add(html, cls) { const d = document.createElement('div'); d.className = 'msg ' + (cls||''); d.innerHTML = html; log.appendChild(d); d.scrollIntoView({behavior:'smooth'}); return d; }
+async function ask(text) {
+  add(esc(text), 'me'); const pending = add('<span class="meta">thinking…</span>'); send.disabled = true;
+  try {
+    const r = await fetch('/v1/ai/ask', {method:'POST', headers:{'Content-Type':'application/json','X-API-Key':document.getElementById('key').value}, body: JSON.stringify({question:text})});
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.status);
+    let html = esc(j.answer) + `<div class="meta">as ${esc(j.user)} · ${j.steps.length} tool call(s)</div>`;
+    for (const s of j.steps) {
+      html += `<details><summary>${esc(s.tool)} ${esc(JSON.stringify(s.args))}</summary>`;
+      if (s.sql) html += `<pre>${esc(s.sql)}</pre>`;
+      if (s.rows) html += `<pre>${esc([s.columns.join(' | '), ...s.rows.slice(0,20).map(r => r.join(' | '))].join('\n'))}</pre>`;
+      if (s.hits) html += `<pre>${esc(s.hits.map(h => `${h.file_name} (${h.score})\n${h.text}`).join('\n\n'))}</pre>`;
+      if (s.error) html += `<pre>${esc(s.error)}</pre>`;
+      html += `</details>`;
+    }
+    pending.innerHTML = html;
+  } catch (e) { pending.innerHTML = 'Error: ' + esc(e.message); }
+  send.disabled = false;
+}
+document.getElementById('f').onsubmit = e => { e.preventDefault(); if (q.value.trim()) { ask(q.value.trim()); q.value=''; } };
+document.querySelectorAll('.chips button').forEach(b => b.onclick = () => ask(b.textContent));
+</script>
+</body>
+</html>

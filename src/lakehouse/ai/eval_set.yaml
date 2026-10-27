@@ -1,0 +1,33 @@
+# Evaluation set for text-to-SQL. Each question has a reference query; a generated answer passes when its
+# result has the same values as the reference (order and column names ignored, numbers rounded).
+# Run `make eval` after changing the model, the prompt or the semantic model, and compare the score.
+# A case with `unanswerable: true` passes when the generator declines instead of writing SQL.
+- question: Which tenants have a lease that ends within the next 2 years?
+  reference: SELECT tenant_id FROM gold.contract_expiry WHERE days_to_expiry BETWEEN 0 AND 730
+- question: Top 3 tenants by net tons in the last 7 days
+  reference: |
+    SELECT tenant_id, sum(net_tons) FROM gold.weighbridge_daily WHERE day >= current_date - INTERVAL '7' DAY
+    GROUP BY tenant_id ORDER BY 2 DESC LIMIT 3
+- question: How many service tickets are still open per category?
+  reference: SELECT category, sum(open_tickets) FROM gold.ticket_sla GROUP BY category
+- question: Berapa tiket yang masih open per kategori?
+  reference: SELECT category, sum(open_tickets) FROM gold.ticket_sla GROUP BY category
+- question: Which bus has the lowest battery right now?
+  reference: SELECT bus_id FROM gold.bus_latest_position ORDER BY battery_pct LIMIT 1
+- question: Total purchase order value per department this month
+  reference: |
+    SELECT department, sum(total_amount_idr) FROM gold.procurement_monthly
+    WHERE month = date_trunc('month', current_date) GROUP BY department
+- question: How many employees work in each department?
+  reference: SELECT department, headcount FROM gold.headcount
+- question: Which leases need a human review of the AI extraction?
+  reference: SELECT tenant_id FROM gold.contract_expiry WHERE needs_review
+- question: What is the monthly service fee of tenant T003?
+  reference: SELECT monthly_fee_idr FROM gold.tenant_overview WHERE tenant_id = 'T003'
+- question: Which ticket category has the most SLA breaches?
+  reference: SELECT category FROM gold.ticket_sla GROUP BY category ORDER BY sum(sla_breaches) DESC LIMIT 1
+# Questions the tables cannot answer: the right result is a refusal, not a query about something else.
+- question: What was the revenue of tenant T002 this year?
+  unanswerable: true
+- question: Berapa lama pemberitahuan untuk mengakhiri kontrak sewa?
+  unanswerable: true

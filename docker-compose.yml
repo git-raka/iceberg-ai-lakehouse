@@ -1,0 +1,300 @@
+name: iceberg-ai-lakehouse
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-app: &app
+  build: .
+  image: iceberg-ai-lakehouse/app:0.1.0
+  environment: &app-env
+    POSTGRES_USER: ${POSTGRES_USER}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+    S3_SECRET_KEY: ${S3_SECRET_KEY}
+    S3_BUCKET: ${S3_BUCKET}
+    ICEBERG_WAREHOUSE: ${ICEBERG_WAREHOUSE}
+    LLM_MODEL: ${LLM_MODEL}
+    EMBED_MODEL: ${EMBED_MODEL}
+    API_KEYS_JSON: ${API_KEYS_JSON}
+    # explicit psycopg2: SQLAlchemy 2.1 defaults to psycopg 3, which cannot bind parameters in Dagster's NOTIFY
+    DAGSTER_PG_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/dagster
+    SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+
+services:
+  # ---------------------------------------------------------------- storage & catalog
+  postgres:
+    <<: *restart
+    image: pgvector/pgvector:0.8.7-pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ai"]
+      interval: 5s
+      retries: 30
+    mem_limit: 512m
+
+  seaweedfs:
+    <<: *restart
+    image: chrislusf/seaweedfs:4.51
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+    volumes:
+      - s3-data:/data
+      - ./infra/seaweedfs/entrypoint.sh:/entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8333/status || exit 1"]
+      interval: 5s
+      retries: 30
+    mem_limit: 512m
+
+  lakekeeper-migrate:
+    image: quay.io/lakekeeper/catalog:v0.14.2
+    command: ["migrate"]
+    environment: &lakekeeper-env
+      LAKEKEEPER__PG_DATABASE_URL_READ: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_DATABASE_URL_WRITE: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/lakekeeper
+      LAKEKEEPER__PG_ENCRYPTION_KEY: ${LAKEKEEPER_ENCRYPTION_KEY}
+      LAKEKEEPER__AUTHZ_BACKEND: allowall
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  lakekeeper:
+    <<: *restart
+    image: quay.io/lakekeeper/catalog:v0.14.2
+    command: ["serve"]
+    environment: *lakekeeper-env
+    depends_on:
+      lakekeeper-migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "/home/nonroot/lakekeeper", "healthcheck"]
+      interval: 5s
+      retries: 30
+    mem_limit: 256m
+
+  lakekeeper-bootstrap:
+    image: curlimages/curl:8.17.0
+    entrypoint: ["/bin/sh", "/bootstrap.sh"]
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET}
+      ICEBERG_WAREHOUSE: ${ICEBERG_WAREHOUSE}
+    volumes:
+      - ./infra/lakekeeper/bootstrap.sh:/bootstrap.sh:ro
+    depends_on:
+      lakekeeper: { condition: service_healthy }
+      seaweedfs: { condition: service_healthy }
+
+  # ---------------------------------------------------------------- SQL & governance
+  trino:
+    <<: *restart
+    image: trinodb/trino:484
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      ICEBERG_WAREHOUSE: ${ICEBERG_WAREHOUSE}
+    volumes:
+      - ./infra/trino/etc/config.properties:/etc/trino/config.properties:ro
+      - ./infra/trino/etc/access-control.properties:/etc/trino/access-control.properties:ro
+      - ./infra/trino/etc/group-provider.properties:/etc/trino/group-provider.properties:ro
+      - ./infra/trino/etc/catalog/iceberg.properties:/etc/trino/catalog/iceberg.properties:ro
+      - ./infra/trino/etc/security:/etc/trino/security:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      lakekeeper-bootstrap: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "/usr/lib/trino/bin/health-check"]
+      interval: 10s
+      retries: 30
+    mem_limit: 1600m
+
+  # ---------------------------------------------------------------- processing
+  spark:
+    <<: *restart
+    build: ./infra/spark
+    image: iceberg-ai-lakehouse/spark:4.1.3
+    environment:
+      # read by Iceberg's S3FileIO (AWS SDK default chain); kept off the command line and out of the logs
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      ICEBERG_WAREHOUSE: ${ICEBERG_WAREHOUSE}
+    depends_on:
+      lakekeeper-bootstrap: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/15002' || exit 1"]
+      interval: 10s
+      retries: 30
+    mem_limit: 3g
+
+  kafka:
+    <<: *restart
+    image: apache/kafka:4.4.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_HEAP_OPTS: -Xmx384m -Xms384m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      retries: 30
+    mem_limit: 768m
+
+  flink-jobmanager:
+    <<: *restart
+    build: ./infra/flink
+    image: iceberg-ai-lakehouse/flink:2.1.3
+    command: jobmanager
+    environment: &flink-env
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}  # for Iceberg's S3FileIO, so the job SQL holds no secrets
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 900m
+        taskmanager.memory.process.size: 1400m
+        taskmanager.numberOfTaskSlots: 2
+        parallelism.default: 1
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:8081:8081"
+    mem_limit: 1g
+
+  flink-taskmanager:
+    <<: *restart
+    image: iceberg-ai-lakehouse/flink:2.1.3
+    command: taskmanager
+    environment: *flink-env
+    depends_on: [flink-jobmanager]
+    mem_limit: 1600m
+
+  flink-job:
+    image: iceberg-ai-lakehouse/flink:2.1.3
+    entrypoint: ["/bin/bash", "/opt/sql/submit.sh"]
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      ICEBERG_WAREHOUSE: ${ICEBERG_WAREHOUSE}
+    depends_on:
+      flink-taskmanager: { condition: service_started }
+      kafka: { condition: service_healthy }
+      lakekeeper-bootstrap: { condition: service_completed_successfully }
+
+  # ---------------------------------------------------------------- local LLM (GPU)
+  ollama:
+    <<: *restart
+    image: ollama/ollama:0.40.11
+    volumes:
+      - ollama-models:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      retries: 30
+    mem_limit: 4g
+
+  # ---------------------------------------------------------------- pipeline, API, AI
+  dagster-webserver:
+    <<: [*restart, *app]
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-m", "lakehouse.orchestration.definitions"]
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:3001:3000"
+    depends_on:
+      trino: { condition: service_healthy }
+      spark: { condition: service_healthy }
+    mem_limit: 768m
+
+  dagster-daemon:
+    <<: [*restart, *app]
+    command: ["dagster-daemon", "run", "-m", "lakehouse.orchestration.definitions"]
+    depends_on:
+      trino: { condition: service_healthy }
+      spark: { condition: service_healthy }
+      ollama: { condition: service_healthy }
+    mem_limit: 1536m
+
+  api:
+    <<: [*restart, *app]
+    command: ["uvicorn", "lakehouse.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:8000:8000"
+    depends_on:
+      trino: { condition: service_healthy }
+      ollama: { condition: service_healthy }
+    mem_limit: 512m
+
+  mcp:
+    <<: [*restart, *app]
+    command: ["python", "-m", "lakehouse.ai.mcp_server", "--port", "8765"]
+    environment:
+      <<: *app-env
+      LAKEHOUSE_API_KEY: ${MCP_API_KEY}  # the identity of the MCP server (executive by default)
+    ports:
+      - "127.0.0.1:8765:8765"
+    depends_on:
+      trino: { condition: service_healthy }
+    mem_limit: 384m
+
+  iot-simulator:
+    <<: [*restart, *app]
+    command: ["python", "-m", "lakehouse.cli", "iot"]
+    depends_on:
+      kafka: { condition: service_healthy }
+    mem_limit: 128m
+
+  superset:
+    <<: *restart
+    build: ./infra/superset
+    image: iceberg-ai-lakehouse/superset:6.1.0
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:8088:8088"
+    depends_on:
+      postgres: { condition: service_healthy }
+      trino: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8088/health || exit 1"]
+      interval: 10s
+      retries: 40
+    mem_limit: 1g
+
+  tools:
+    <<: *app
+    profiles: ["tools"]
+    volumes:
+      - ./src:/app/src  # commands always run the code in the working tree, without a rebuild
+    command: ["python", "-m", "lakehouse.cli", "--help"]
+
+volumes:
+  pg-data:
+  s3-data:
+  kafka-data:
+  ollama-models:
