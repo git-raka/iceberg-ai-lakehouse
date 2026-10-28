@@ -124,7 +124,7 @@ _NUMBER = re.compile(r"\d[\d.,]*\d|\d")
 
 def numbers(text: str) -> dict[str, float]:
     """Numbers written in a text, parsed in English or Indonesian style: '118,000,000', '118.000.000',
-    '1,250.5', '1.250,5', '416.86'. Values under 10 are ignored (counts, list markers, month numbers)."""
+    '1,250.5', '1.250,5', '416.86', '47,1'. Values under 10 are ignored (counts, list markers, month numbers)."""
     out = {}
     for tok in _NUMBER.findall(text or ""):
         if re.fullmatch(r"\d{1,3}([.,]\d{3})+", tok):
@@ -133,6 +133,8 @@ def numbers(text: str) -> dict[str, float]:
             value = float(tok.replace(",", ""))
         elif re.fullmatch(r"\d{1,3}(\.\d{3})+,\d+", tok):
             value = float(tok.replace(".", "").replace(",", "."))
+        elif re.fullmatch(r"\d+,(\d{1,2}|\d{4,})", tok):  # a decimal comma: not a group of three digits
+            value = float(tok.replace(",", "."))
         else:
             try:
                 value = float(tok.replace(",", ""))

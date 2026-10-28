@@ -10,6 +10,7 @@ results back to the lakehouse with lineage.
 | **B** | Gold → retrieval | Embeds document chunks for semantic search | `ai/vectors.py` → `gold.document_chunk` (Iceberg) + `doc_chunk` (pgvector) | Vector Search, Cortex Search |
 | **C** | Consumption | Text-to-SQL grounded on a semantic model | `ai/text2sql.py` + `ai/semantic_model.yaml` | Genie, Cortex Analyst |
 | **D** | Consumption | An agent that calls tools (SQL, document search) and an MCP server for any MCP client | `ai/agent.py`, `ai/mcp_server.py` | Agent frameworks, managed MCP servers |
+| **E** | Consumption | Designs a dashboard from a prompt by choosing metrics from a catalog | `ai/dashboard.py` + `ai/dashboard_catalog.yaml` | AI/BI dashboards, generative BI |
 
 ## A. Documents to structured data
 
@@ -77,6 +78,39 @@ streamable HTTP on port 8765.
 ```bash
 LAKEHOUSE_API_KEY=<a key from API_KEYS_JSON> python -m lakehouse.ai.mcp_server --stdio
 ```
+
+## E. Prompt to dashboard
+
+A request such as "buatkan dashboard eksekutif summary dari data yang kita punya" becomes a dashboard. The
+model only *chooses*; code builds and checks everything:
+
+1. **Spec.** The model returns JSON that must match a schema built from `dashboard_catalog.yaml`: up to 6 KPI
+   tiles and 8 charts, each a metric id, a grouping, a time window and a chart type, all as enums. It never
+   writes SQL, so it cannot ask for a table or a column the catalog does not list.
+2. **Compile and run.** Each item becomes SQL from the catalog definition, passes the same SQL guard as
+   text-to-SQL and runs in Trino *as the caller*. A tenant gets a dashboard of its own rows; a metric its role
+   may not read (headcount, procurement) is left out with the reason.
+3. **Validate.** Items with no data, an access error or a grouping the metric does not support are dropped and
+   listed. The chart type is fitted to the data: a time axis is a line, at most 8 non-negative slices may be a
+   pie, more than 25 rows become a table. If nothing usable comes back, the model gets one repair round with
+   the reasons; after that the catalog's default dashboard is shown.
+4. **Summary.** Two or three sentences over the KPI values. As in the agent, every number must appear in those
+   values, or the summary is dropped. Title and summary are written in the language of the prompt.
+
+The page `http://localhost:8000/dashboard` renders the result with ECharts. It is also embedded at the top of
+the Superset executive dashboard. **Create in Superset** turns the result into a real Superset dashboard:
+
+- The spec comes back from the browser, so the API treats it like model output: every metric, grouping and
+  window must be in the catalog, titles are cut to 120 characters, and the items are compiled, checked and run
+  again as the caller. SQL, results and the summary from the browser are never used; the summary is written
+  again on the server.
+- Each item becomes a virtual dataset (its compiled SQL) and a chart.
+- The datasets use a Superset database connection for the caller's identity
+  (`trino://<identity>@trino:8080/iceberg`), so the published dashboard keeps that identity's row filters and
+  masks. `admin` (unfiltered) and vendor identities cannot publish.
+- The prompt and the summary are shown as plain text: HTML and Markdown in them are escaped.
+- Publishing the same result again opens the existing dashboard instead of creating a copy. A publish that fails
+  half-way removes the datasets and charts it had created.
 
 ## Observability
 

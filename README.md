@@ -22,7 +22,8 @@ actually fits in a lakehouse.
 | **AI-B** search | Embeddings in pgvector, filtered by what the caller may see in Trino |
 | **AI-C** text-to-SQL | Grounded on a semantic model, SQL guard (sqlglot), evaluation set |
 | **AI-D** agent + MCP | Tool-calling agent with a grounding check; MCP server for any MCP client |
-| **BI** | Superset dashboard as code, with the AI assistant embedded in it |
+| **AI-E** prompt to dashboard | The LLM picks metrics from a catalog; code compiles, runs and validates them as the caller; one click publishes to Superset |
+| **BI** | Superset dashboard as code, with the AI assistant and the prompt-to-dashboard panel embedded in it |
 | **Data sharing** | A `share` data product for a fictional vendor, through a fixed REST API and (optional) Cube REST/GraphQL; the vendor sees only its tenants |
 
 ## End-to-end data flow
@@ -78,6 +79,7 @@ flowchart LR
     SUP["Superset dashboard<br/>(executive)"]
     API["Data API /v1"]
     AGT["AI-C text-to-SQL<br/>AI-D agent + chat UI"]
+    GEN["AI-E prompt to dashboard<br/>(ECharts page, publish to Superset)"]
     MCP["MCP server<br/>(any MCP client)"]
     CUBE["Cube REST + GraphQL<br/>(optional)"]
   end
@@ -109,6 +111,8 @@ flowchart LR
   TR --> SUP
   TR --> API
   TR --> AGT
+  TR -- "as the caller" --> GEN
+  GEN -- "per-identity connection" --> SUP
   TR --> MCP
   TR -- "as the caller" --> CUBE
   VEC -. "doc_ids allowed by Trino" .-> AGT
@@ -148,16 +152,17 @@ takes 15 to 30 minutes, mostly downloads.
 
 | URL | What |
 |---|---|
-| http://localhost:8088/superset/dashboard/executive/ | Executive dashboard with the AI assistant panel (user `admin`, password in `.env`) |
+| http://localhost:8088/superset/dashboard/executive/ | Executive dashboard with the prompt-to-dashboard and AI assistant panels (user `admin`, password in `.env`) |
 | http://localhost:8000/ | AI chat. Pick an identity and watch the answer change |
+| http://localhost:8000/dashboard | Prompt to dashboard: describe a dashboard, get KPIs and charts, publish it to Superset |
 | http://localhost:8000/docs | Data / AI API (header `X-API-Key`; `make env` writes random keys per identity to `API_KEYS_JSON` in `.env`) |
 | http://localhost:3001/ | Dagster: asset lineage, runs, checks |
 | http://localhost:8081/ | Flink: the streaming job |
 | http://localhost:8765/mcp | MCP server (streamable HTTP) |
 | http://localhost:4000 | Cube Playground, REST and GraphQL (optional: `make cube-up`) |
 
-All ports are bound to `127.0.0.1`. Keep it that way: the demo chat page carries the non-admin API keys in
-its identity menu so you can switch roles. Run `make help` to list every command.
+All ports are bound to `127.0.0.1`. Keep it that way: the demo chat and dashboard pages carry the non-admin API
+keys in their identity menu so you can switch roles. Run `make help` to list every command.
 
 ## Things to try
 
@@ -198,7 +203,21 @@ not prompts:
 - **Unanswerable questions.** Text-to-SQL may decline. A question about data the tables do not hold (revenue,
   for example) gets "not in the lakehouse" instead of a query about something else.
 
-**3. A day of changes: CDC, document versions, time travel**
+**3. A dashboard from a prompt**
+
+Open http://localhost:8000/dashboard (or the panel at the top of the Superset dashboard) and type, for
+example, "buatkan dashboard eksekutif summary dari data yang kita punya". The model chooses KPIs and charts from
+`dashboard_catalog.yaml`; code builds the SQL, runs it in Trino as the selected identity and fits each chart to
+its data. As `tenant_t003`, the same prompt gives a dashboard of T003's own rows, and procurement and headcount
+are left out with the reason. **Create in Superset** publishes the result as a real Superset dashboard that
+queries Trino as that identity. The same thing over the API:
+
+```bash
+curl -s localhost:8000/v1/ai/dashboard -H "X-API-Key: <a key from .env>" -H 'Content-Type: application/json' \
+  -d '{"prompt": "Weighbridge tonnage and trucks over the last 30 days"}'
+```
+
+**4. A day of changes: CDC, document versions, time travel**
 
 ```bash
 make increment     # ERP updates, a tenant's new phone number, new weighbridge/tickets, amended contracts
@@ -207,7 +226,7 @@ make pipeline      # bronze takes only new rows/files, silver merges only change
 make timetravel    # every Iceberg snapshot of silver.tenant, and the CDC history in bronze
 ```
 
-**4. Text-to-SQL quality**
+**5. Text-to-SQL quality**
 
 ```bash
 make eval          # 12 questions (English and Indonesian), 2 of them unanswerable on purpose; currently 12/12
@@ -216,7 +235,7 @@ make eval          # 12 questions (English and Indonesian), 2 of them unanswerab
 Run it again after changing the model (`LLM_MODEL` in `.env`), the prompt or the semantic model, and compare
 the scores.
 
-**5. MCP.** Point an MCP client at `http://localhost:8765/mcp`. It runs as the identity of `MCP_API_KEY` in
+**6. MCP.** Point an MCP client at `http://localhost:8765/mcp`. It runs as the identity of `MCP_API_KEY` in
 `.env` (the executive key by default). It only accepts requests addressed to localhost, which protects it
 against DNS rebinding. For a desktop client over stdio, use one of your keys from `.env`:
 
@@ -230,7 +249,7 @@ against DNS rebinding. For a desktop client over stdio, use one of your keys fro
 The tools are `list_datasets`, `describe_table`, `run_sql` (read-only, guarded), `ask_data` and
 `search_documents`.
 
-**6. Share data with a vendor.** A fictional haulage vendor needs the daily tonnage of the two tenants it
+**7. Share data with a vendor.** A fictional haulage vendor needs the daily tonnage of the two tenants it
 serves, T002 and T005, and nothing else. The data product `share.tonnage_daily` and two Trino rules give it
 exactly that, whichever API it uses:
 
@@ -272,11 +291,12 @@ infra/                    configuration per service (Trino rules, Spark, Flink j
 src/lakehouse/
   sources/                synthetic ERP, weighbridge, tickets, PDFs, e-bus simulator
   pipeline/               bronze ingestion (CDC, files, documents) and silver/gold transforms (Spark)
-  ai/                     documents (A), vectors (B), text2sql + semantic model (C), agent + MCP (D), eval
-  api/                    FastAPI data/AI API and the chat page
+  ai/                     documents (A), vectors (B), text2sql + semantic model (C), agent + MCP (D),
+                          prompt to dashboard + metric catalog (E), eval
+  api/                    FastAPI data/AI API, the chat page and the prompt-to-dashboard page
   orchestration/          Dagster assets, checks, schedules
-  superset_setup.py       dashboard as code
-tests/                    unit tests for extraction rules, SQL guard and grounding (`make test`)
+  superset_setup.py       dashboard as code, and publishing prompt-to-dashboard results
+tests/                    unit tests for extraction rules, SQL guard, grounding and prompt to dashboard (`make test`)
 docs/                     architecture, AI layer, path to production
 ```
 

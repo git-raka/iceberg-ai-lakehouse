@@ -21,7 +21,7 @@ import yaml
 from trino.exceptions import TrinoUserError
 
 from . import llm, text2sql
-from .agent import ungrounded
+from .agent import language, ungrounded
 from .trino_client import query
 
 MAX_KPIS, MAX_CHARTS = 6, 8
@@ -44,11 +44,13 @@ def spec_schema() -> dict:
                 "type": "object", "properties": {"metric": metric, "window": window}, "required": ["metric", "window"]}},
             "charts": {"type": "array", "maxItems": MAX_CHARTS, "items": {
                 "type": "object",
-                "properties": {"title": {"type": "string"}, "metric": metric,
+                # the title comes last: the model writes it after choosing what the chart shows
+                "properties": {"metric": metric,
                                "group_by": {"type": "string", "enum": ["time", *sorted(c["dimensions"])]},
                                "window": window,
-                               "chart": {"type": "string", "enum": ["line", "bar", "pie", "table"]}},
-                "required": ["title", "metric", "group_by", "window", "chart"]}},
+                               "chart": {"type": "string", "enum": ["line", "bar", "pie", "table"]},
+                               "title": {"type": "string"}},
+                "required": ["metric", "group_by", "window", "chart", "title"]}},
         },
         "required": ["title", "kpis", "charts"],
     }
@@ -67,15 +69,18 @@ def catalog_prompt() -> str:
 
 SYSTEM = """You design dashboards for an industrial estate's management. Choose KPI tiles and charts from the
 metric catalog that best answer the request: up to 6 KPIs and up to 8 charts, no duplicates. Prefer a trend
-(group_by time, chart line) for metrics with a time axis, a bar chart to compare categories. Write the title and
-chart titles in the language of the request. Return JSON only.
+(group_by time, chart line) for metrics with a time axis, a bar chart to compare categories. A chart title says
+what is drawn: call it a trend only when group_by is time, otherwise name the grouping ("per tenant", "by
+category"). Write the title and chart titles in {language}. Return JSON only.
 
 {catalog}"""
 
 
 def design(prompt: str, user: str, feedback: str | None = None) -> dict:
-    messages = [{"role": "system", "content": SYSTEM.format(catalog=catalog_prompt())},
-                {"role": "user", "content": prompt}]
+    lang = language(prompt)
+    # the language is named next to the request too: larger models follow it there for the dashboard title
+    messages = [{"role": "system", "content": SYSTEM.format(language=lang, catalog=catalog_prompt())},
+                {"role": "user", "content": f"{prompt}\n\n(Write the dashboard title and chart titles in {lang}.)"}]
     if feedback:
         messages.append({"role": "user", "content": feedback})
     msg = llm.chat(messages, purpose="dashboard-design", user=user, schema=spec_schema())
@@ -127,17 +132,49 @@ def fit_chart(requested: str, group_by: str, rows: list[list]) -> str:
     return "table" if requested == "table" else "bar"
 
 
+MAX_TITLE = 120
+
+
+def text(value, default: str) -> str:
+    """A title from a spec: a string, at most MAX_TITLE characters, or the default."""
+    return value.strip()[:MAX_TITLE] if isinstance(value, str) and value.strip() else default
+
+
+def clean_item(item, chart: bool) -> tuple[str, str | None, str, str | None]:
+    """(metric, group_by, window, note) for one spec item, or ValueError. A spec may come from a browser, not only
+    from the schema-bound model, so every field is checked against the catalog before anything is compiled."""
+    c = catalog()
+    if not isinstance(item, dict):
+        raise ValueError("not an object")
+    mid, window, group_by = item.get("metric"), item.get("window", "all_time"), item.get("group_by")
+    if not isinstance(mid, str) or mid not in c["metrics"]:
+        raise ValueError(f"unknown metric {str(mid)[:40]!r}")
+    if not isinstance(window, str) or window not in c["windows"]:
+        raise ValueError(f"unknown window {str(window)[:40]!r}")
+    note = None
+    if window != "all_time" and not c["metrics"][mid].get("time"):
+        window, note = "all_time", f"{mid} has no time axis; the window was ignored"
+    if chart and (not isinstance(group_by, str) or group_by not in ("time", *c["dimensions"])):
+        raise ValueError(f"unknown grouping {str(group_by)[:40]!r}")
+    return mid, group_by if chart else None, window, note
+
+
 def build(spec: dict, user: str) -> dict:
     """Compile, run and validate every item of a spec. Nothing the model chose reaches Trino unchecked."""
     c = catalog()
+    spec = spec if isinstance(spec, dict) else {}
     kpis, charts, issues, seen = [], [], [], set()
-    for item in (spec.get("kpis") or [])[:MAX_KPIS]:
-        mid, window = item.get("metric"), item.get("window", "all_time")
-        if mid not in c["metrics"] or (mid, window) in seen:
+    for item in (spec.get("kpis") if isinstance(spec.get("kpis"), list) else [])[:MAX_KPIS]:
+        try:
+            mid, _, window, note = clean_item(item, chart=False)
+        except ValueError as e:
+            issues.append(f"KPI: {e}")
+            continue
+        if (mid, window) in seen:
             continue
         seen.add((mid, window))
         try:
-            sql, note = compile_sql(mid, None, window)
+            sql, _ = compile_sql(mid, None, window)
             rows = run(sql, user)
         except (ValueError, text2sql.UnsafeSQL, TrinoUserError) as e:
             issues.append(f"KPI {mid}: {getattr(e, 'message', e)}")
@@ -148,37 +185,54 @@ def build(spec: dict, user: str) -> dict:
             continue
         kpis.append({"metric": mid, "label": c["metrics"][mid]["label"], "window": window, "value": value,
                      "format": c["metrics"][mid]["format"], "sql": sql, **({"note": note} if note else {})})
-    for item in (spec.get("charts") or [])[:MAX_CHARTS]:
-        mid, group_by, window = item.get("metric"), item.get("group_by"), item.get("window", "all_time")
-        if mid not in c["metrics"] or (mid, group_by, window) in seen:
+    for item in (spec.get("charts") if isinstance(spec.get("charts"), list) else [])[:MAX_CHARTS]:
+        try:
+            mid, group_by, window, note = clean_item(item, chart=True)
+        except ValueError as e:
+            issues.append(f"Chart: {e}")
+            continue
+        if (mid, group_by, window) in seen:
             continue
         seen.add((mid, group_by, window))
+        title = text(item.get("title"), c["metrics"][mid]["label"])
         try:
-            sql, note = compile_sql(mid, group_by, window)
+            sql, _ = compile_sql(mid, group_by, window)
             rows = run(sql, user)
         except (ValueError, text2sql.UnsafeSQL, TrinoUserError) as e:
-            issues.append(f"Chart '{item.get('title') or mid}': {getattr(e, 'message', e)}")
+            issues.append(f"Chart '{title}': {getattr(e, 'message', e)}")
             continue
         rows = [r for r in rows if r[1] is not None]
         if not rows:
-            issues.append(f"Chart '{item.get('title') or mid}': no data visible to {user}")
+            issues.append(f"Chart '{title}': no data visible to {user}")
             continue
-        charts.append({"title": item.get("title") or c["metrics"][mid]["label"], "metric": mid,
-                       "label": c["metrics"][mid]["label"], "group_by": group_by,
+        requested = item.get("chart") if item.get("chart") in ("line", "bar", "pie", "table") else "bar"
+        charts.append({"title": title, "metric": mid, "label": c["metrics"][mid]["label"], "group_by": group_by,
                        "x_label": "Date" if group_by == "time" else c["dimensions"][group_by],
-                       "window": window, "chart": fit_chart(item.get("chart", "bar"), group_by, rows),
+                       "window": window, "chart": fit_chart(requested, group_by, rows),
                        "format": c["metrics"][mid]["format"], "rows": rows, "sql": sql,
                        **({"note": note} if note else {})})
-    return {"title": spec.get("title") or "Dashboard", "kpis": kpis, "charts": charts, "issues": issues}
+    return {"title": text(spec.get("title"), "Dashboard"), "kpis": kpis, "charts": charts, "issues": issues}
+
+
+def figure(value, lang: str) -> str:
+    """A KPI value written the way the summary should write it: '1,371,000,000' or '1.371.000.000', '47.1' or
+    '47,1'. Given in the reply's own style, the model copies figures instead of reformatting (and garbling) them."""
+    if not isinstance(value, (int, float)):
+        return str(value)
+    text = f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}".rstrip("0").rstrip(".")
+    return text.translate(str.maketrans(",.", ".,")) if lang == "Indonesian" else text
 
 
 def summarize(prompt: str, dashboard: dict, user: str) -> str | None:
     """Two or three sentences over the KPI values; dropped if it states a number that is not in them."""
     if not dashboard["kpis"]:
         return None
-    facts = "\n".join(f"- {k['label']} ({k['window'].replace('_', ' ')}): {k['value']}" for k in dashboard["kpis"])
+    lang = language(prompt)
+    facts = "\n".join(f"- {k['label']} ({k['window'].replace('_', ' ')}): {figure(k['value'], lang)}"
+                      for k in dashboard["kpis"])
     msg = llm.chat([{"role": "system", "content": "Write a 2-3 sentence executive summary using only these "
-                     "figures, in the language of the request. Do not add numbers that are not listed."},
+                     f"figures, in {lang}. Copy each figure exactly as written; do not round, convert or add "
+                     "numbers."},
                     {"role": "user", "content": f"Request: {prompt}\n\nFigures:\n{facts}"}],
                    purpose="dashboard-summary", user=user)
     text = (msg.content or "").strip()
@@ -199,7 +253,8 @@ def generate(prompt: str, user: str) -> dict:
     fallback = False
     if not dash["kpis"] and not dash["charts"]:
         fallback = True
-        dash = build(catalog()["default_dashboard"], user)
+        spec = catalog()["default_dashboard"]  # the spec returned is what was built, so it can be published
+        dash = build(spec, user)
     dash.update(prompt=prompt, user=user, spec=spec, repaired=repaired, fallback=fallback,
                 summary=summarize(prompt, dash, user))
     return dash
