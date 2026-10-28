@@ -1,0 +1,143 @@
+# Metric catalog for prompt-to-dashboard. The model only *chooses* metrics, dimensions, time windows and chart
+# types from this file (the JSON schema enumerates them); the SQL is assembled by code from these definitions,
+# checked by the SQL guard and run in Trino as the person asking.
+#
+#   expr      aggregate over the table
+#   time      date column used for time windows and trend charts (omit when the table has no time axis)
+#   dims      columns the metric may be grouped by
+#   format    number | idr | hours | percent
+
+metrics:
+  net_tons:
+    label: Net tons weighed
+    table: gold.weighbridge_daily
+    expr: sum(net_tons)
+    time: day
+    dims: [tenant_id]
+    format: number
+  trucks:
+    label: Trucks weighed
+    table: gold.weighbridge_daily
+    expr: sum(trucks)
+    time: day
+    dims: [tenant_id]
+    format: number
+  open_tickets:
+    label: Open service tickets
+    table: gold.ticket_sla
+    expr: sum(open_tickets)
+    dims: [category, tenant_id]
+    format: number
+  tickets:
+    label: Service tickets
+    table: gold.ticket_sla
+    expr: sum(tickets)
+    dims: [category, tenant_id]
+    format: number
+  sla_breaches:
+    label: SLA breaches (over 48 hours)
+    table: gold.ticket_sla
+    expr: sum(sla_breaches)
+    dims: [category, tenant_id]
+    format: number
+  avg_resolution_hours:
+    label: Average hours to close a ticket
+    table: gold.ticket_sla
+    expr: round(avg(avg_resolution_hours), 1)
+    dims: [category]
+    format: hours
+  procurement_idr:
+    label: Purchase order value
+    table: gold.procurement_monthly
+    expr: sum(total_amount_idr)
+    time: month
+    dims: [department]
+    format: idr
+  purchase_orders:
+    label: Purchase orders
+    table: gold.procurement_monthly
+    expr: sum(po_count)
+    time: month
+    dims: [department]
+    format: number
+  headcount:
+    label: Employees
+    table: gold.headcount
+    expr: sum(headcount)
+    dims: [department]
+    format: number
+  tenants:
+    label: Tenants
+    table: gold.tenant_overview
+    expr: count(*)
+    dims: [sector, zone, status]
+    format: number
+  leased_area_m2:
+    label: Leased area (m²)
+    table: gold.tenant_overview
+    expr: sum(area_m2)
+    dims: [zone, sector]
+    format: number
+  monthly_fee_idr:
+    label: Monthly service fees
+    table: gold.tenant_overview
+    expr: sum(monthly_fee_idr)
+    dims: [sector, zone, tenant_id]
+    format: idr
+  leases_expiring_12m:
+    label: Leases expiring within 12 months
+    table: gold.contract_expiry
+    expr: count_if(days_to_expiry BETWEEN 0 AND 365)
+    dims: [tenant_id]
+    format: number
+  leases_to_review:
+    label: AI-extracted leases to review
+    table: gold.contract_expiry
+    expr: count_if(needs_review)
+    dims: []
+    format: number
+  bus_min_battery:
+    label: Lowest bus battery level
+    table: gold.fleet_daily
+    expr: min(min_battery_pct)
+    time: day
+    dims: [bus_id]
+    format: percent
+  bus_max_passengers:
+    label: Most passengers on a bus
+    table: gold.fleet_daily
+    expr: max(max_passengers)
+    time: day
+    dims: [bus_id]
+    format: number
+
+dimensions:
+  tenant_id: Tenant
+  category: Ticket category
+  department: Department
+  sector: Industry sector
+  zone: Estate zone
+  status: Tenant status
+  bus_id: Bus
+
+windows:
+  last_7_days: "{time} >= current_date - INTERVAL '7' DAY"
+  last_30_days: "{time} >= current_date - INTERVAL '30' DAY"
+  last_90_days: "{time} >= current_date - INTERVAL '90' DAY"
+  this_month: "{time} >= date_trunc('month', current_date)"
+  this_year: "{time} >= date_trunc('year', current_date)"
+  all_time: "TRUE"
+
+# what an empty or unusable request falls back to
+default_dashboard:
+  title: Estate executive summary
+  kpis:
+    - {metric: tenants, window: all_time}
+    - {metric: net_tons, window: last_30_days}
+    - {metric: open_tickets, window: all_time}
+    - {metric: leases_expiring_12m, window: all_time}
+  charts:
+    - {title: Net tons per day, metric: net_tons, group_by: time, window: last_30_days, chart: line}
+    - {title: Net tons per tenant, metric: net_tons, group_by: tenant_id, window: last_30_days, chart: bar}
+    - {title: Open tickets by category, metric: open_tickets, group_by: category, window: all_time, chart: bar}
+    - {title: Purchase order value by department, metric: procurement_idr, group_by: department, window: this_year, chart: bar}
