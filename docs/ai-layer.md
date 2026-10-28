@@ -68,6 +68,8 @@ A 7B model does not follow a prompt reliably, so the rules that matter are code 
 | A refusal while the query returned visible values gets a second, tool-free answer from the results | Small models over-applying "restricted" |
 | For a tenant identity, results carry a note that only its own rows are visible | Presenting one row as a ranking of all tenants |
 | The reply language is detected from the question | Answers in a third language |
+| A request for a dashboard is pointed to the prompt-to-dashboard page (E) | One SQL query trying, and failing, to be a dashboard |
+| A tool call identical to an earlier one is not run again; after repeated attempts the answer is written from the results already fetched | Loops that call the same tool until the step limit |
 
 Questions outside the estate's data get a short note on what the assistant can answer, with no tool call.
 

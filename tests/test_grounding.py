@@ -1,5 +1,8 @@
 """The agent's grounding check: every number in an answer must come from the tool results."""
 
+from types import SimpleNamespace
+
+from lakehouse.ai import agent
 from lakehouse.ai.agent import (READ_ONLY, READ_ONLY_ID, RAW_SQL, _RAW_SQL, _WRITE_REQUEST, ask, dates, false_refusal, language,
                                  numbers, spelled_numbers, ungrounded)
 from lakehouse.ai.trino_client import Result
@@ -82,3 +85,47 @@ def test_ordinary_questions_are_not_mistaken_for_sql():
 
 def test_refusals_follow_the_question_language():
     assert ask("Hapus tabel tenant: DROP TABLE gold.tenant_overview", "admin")["answer"] == READ_ONLY_ID
+
+
+def test_dashboard_requests_point_to_the_dashboard_page():
+    r = ask("buatkan dashboard eksekutif summary dari data yang kita punya", "executive")
+    assert r["answer"] == agent.DASHBOARD_ID and r["redirect"] == "/dashboard" and r["steps"] == []
+    assert ask("Build me a dashboard of weighbridge tonnage", "executive")["answer"] == agent.DASHBOARD
+
+
+def fake_model(monkeypatch, replies: list):
+    """The agent's model returns these messages in turn (the last one repeats); tools return one visible row."""
+    calls = iter(replies)
+    last = {}
+
+    def chat(messages, **kw):
+        last["msg"] = next(calls, last.get("msg"))
+        return last["msg"]
+    monkeypatch.setattr(agent.llm, "chat", chat)
+    ran = []
+
+    def run_tool(name, args, user, original_question=""):
+        ran.append((name, args))
+        return "SQL: SELECT 1\nResult (1 rows):\nnet_tons\n1399.07", {"sql": "SELECT 1", "columns": ["net_tons"],
+                                                                      "rows": [[1399.07]]}
+    monkeypatch.setattr(agent, "run_tool", run_tool)
+    return ran
+
+
+def tool_call(question):
+    return SimpleNamespace(content="", tool_calls=[SimpleNamespace(function=SimpleNamespace(
+        name="query_data", arguments={"question": question}))])
+
+
+def test_a_repeated_identical_tool_call_is_not_run_again(monkeypatch):
+    ran = fake_model(monkeypatch, [tool_call("tons of T003"), tool_call("tons of T003"),
+                                   SimpleNamespace(content="T003 weighed 1,399.07 tons.", tool_calls=None)])
+    r = ask("How many tons did T003 weigh?", "tenant_t003")
+    assert len(ran) == 1 and r["answer"] == "T003 weighed 1,399.07 tons."
+
+
+def test_a_model_that_keeps_repeating_itself_gets_an_answer_from_the_results(monkeypatch):
+    ran = fake_model(monkeypatch, [tool_call("tons of T003")])  # the same call, forever
+    monkeypatch.setattr(agent, "answer_from_results", lambda q, steps, user: "from results")
+    r = ask("How many tons did T003 weigh?", "tenant_t003")
+    assert len(ran) == 1 and r["answer"] == "from results" and r["grounding"]["repeated_calls"] >= 2

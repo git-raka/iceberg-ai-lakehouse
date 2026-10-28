@@ -216,11 +216,12 @@ D3_FORMAT = {"number": "SMART_NUMBER", "idr": "SMART_NUMBER", "hours": ",.1f", "
 def ai_chart(item: dict) -> tuple[str, dict, int, int]:
     """(viz type, params, width, height) for one validated KPI or chart. Its dataset is the item's own SQL, whose
     columns are `value` for a KPI and `x`, `y` for a chart."""
-    if "chart" not in item:  # KPI tile
+    if "chart" not in item:  # KPI tile: the window as a small caption under the number
         return "big_number_total", {"metric": {"expressionType": "SQL", "sqlExpression": "MAX(value)",
                                                "label": item["label"]},
                                     "subheader": item["window"].replace("_", " "),
-                                    "y_axis_format": D3_FORMAT[item["format"]]}, 2, 30
+                                    "header_font_size": 0.3, "subheader_font_size": 0.125,
+                                    "y_axis_format": D3_FORMAT[item["format"]]}, 2, 40
     y = {"expressionType": "SQL", "sqlExpression": "SUM(y)", "label": item["label"]}
     if item["chart"] == "pie":
         return "pie", {"groupby": ["x"], "metric": y, "row_limit": 1000}, 6, 50
@@ -228,8 +229,9 @@ def ai_chart(item: dict) -> tuple[str, dict, int, int]:
         return "table", {"query_mode": "raw", "all_columns": ["x", "y"], "order_by_cols": ['["y", false]'],
                          "row_limit": 1000}, 6, 50
     viz = "echarts_timeseries_line" if item["chart"] == "line" else "echarts_timeseries_bar"
+    # no axis title: the chart title names the axis, and Superset draws the title over the tick labels
     params = {"x_axis": "x", "metrics": [y], "groupby": [], "row_limit": 1000, "y_axis_format":
-              D3_FORMAT[item["format"]], "x_axis_title": item["x_label"], "show_legend": False}
+              D3_FORMAT[item["format"]], "show_legend": False}
     if item["group_by"] != "time":  # categories: largest first, as on the prompt page
         params["x_axis_sort"], params["x_axis_sort_asc"] = item["label"], False
     return viz, params, 6, 50

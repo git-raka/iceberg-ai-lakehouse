@@ -37,6 +37,12 @@ READ_ONLY_ID = ("Saya hanya bisa membaca data; saya tidak bisa mengubah, membuat
                 "ada yang diubah. Silakan ajukan pertanyaan tentang data estate.")
 RAW_SQL_ID = ("Saya menjawab pertanyaan dalam bahasa biasa dan tidak menjalankan SQL yang ditulis di pertanyaan. "
               "Untuk query read-only yang persis, gunakan POST /v1/sql (diperiksa SQL guard dan aturan akses yang sama).")
+# a dashboard is built by prompt-to-dashboard, not answered by one query
+_DASHBOARD = re.compile(r"(?i)\b(dashboards?|dasbor)\b")
+DASHBOARD = ("I answer questions with data; dashboards are built on the prompt-to-dashboard page "
+             "(/dashboard, also at the top of the Superset dashboard). Describe the dashboard you need there.")
+DASHBOARD_ID = ("Saya menjawab pertanyaan dengan data; dashboard dibuat di halaman prompt-to-dashboard "
+                "(/dashboard, juga di bagian atas dashboard Superset). Jelaskan dashboard yang Anda butuhkan di sana.")
 
 # questions that clearly need data or documents: if the model answers them without a tool, run the tool for it
 _ON_TOPIC = re.compile(r"(?i)\b(tenants?|lease|leases|sewa|kontrak|contract|plot|lahan|zona|zone|bus|buses|baterai|"
@@ -234,15 +240,18 @@ def language(question: str) -> str:
 def ask(question: str, user: str, max_steps: int = 6) -> dict:
     indonesian = language(question) == "Indonesian"
     for pattern, refusal, kind in ((_WRITE_REQUEST, READ_ONLY_ID if indonesian else READ_ONLY, "write"),
-                                   (_RAW_SQL, RAW_SQL_ID if indonesian else RAW_SQL, "raw_sql")):
+                                   (_RAW_SQL, RAW_SQL_ID if indonesian else RAW_SQL, "raw_sql"),
+                                   (_DASHBOARD, DASHBOARD_ID if indonesian else DASHBOARD, "dashboard")):
         if pattern.search(question):
             return {"question": question, "answer": refusal, "steps": [], "user": user,
-                    "grounding": {"checked": True, "refused": kind}}
+                    "grounding": {"checked": True, "refused": kind},
+                    **({"redirect": "/dashboard"} if kind == "dashboard" else {})}
     messages = [{"role": "system", "content": f"{SYSTEM}\nReply in {language(question)}."},
                 {"role": "user", "content": question}]
-    steps, evidence, retried, forced = [], [question], False, set()
+    steps, evidence, retried, forced, done, repeats = [], [question], False, set(), set(), 0
 
     def call(name: str, args: dict) -> None:
+        done.add((name, json.dumps(args, sort_keys=True, default=str)))
         text, record = run_tool(name, args, user, question)
         evidence.append(text)
         steps.append({"tool": name, "args": args, **{k: v for k, v in record.items()
@@ -295,5 +304,19 @@ def ask(question: str, user: str, max_steps: int = 6) -> dict:
             name = c.function.name
             if name == "query_data" and _WRITE_REQUEST.search(str(args.get("question", ""))):
                 args["question"] = question  # never forward a rewritten write request
+            if (name, json.dumps(args, sort_keys=True, default=str)) in done:
+                # small models repeat a call whose result they did not like; running it again changes nothing
+                repeats += 1
+                messages.append({"role": "tool", "tool_name": name, "content": "This exact call was already made "
+                                 "and its result is above. Answer from it now, or call a different tool."})
+                continue
             call(name, args)
-    return {"question": question, "answer": "I could not finish within the step limit.", "steps": steps, "user": user}
+        if repeats >= 2:
+            break
+    # out of steps, or the model kept repeating itself: answer from what the tools returned, if anything
+    answer = (answer_from_results(question, steps, user) if visible_values(steps) else
+              ("Saya tidak menemukan data untuk menjawab ini." if indonesian else
+               "I could not find data to answer this."))
+    return {"question": question, "answer": answer, "steps": steps, "user": user,
+            "grounding": {"checked": True, "retried": retried, "repeated_calls": repeats,
+                          "forced_tools": sorted(forced)}}

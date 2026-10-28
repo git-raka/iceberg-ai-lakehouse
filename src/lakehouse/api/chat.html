@@ -19,12 +19,14 @@
   form { position:fixed; left:0; right:0; bottom:0; background:var(--bg); border-top:1px solid var(--line); padding:12px 16px }
   form .row { max-width:900px; margin:0 auto; display:flex; gap:8px } form input { flex:1 }
   .chips button { background:var(--panel); color:var(--text); border:1px solid var(--line); font-size:13px }
+  a { color:var(--accent) } a.go { display:inline-block; margin-top:10px; background:var(--accent); color:#fff; border-radius:8px; padding:6px 12px; text-decoration:none }
 </style>
 </head>
 <body>
 <main>
   <h1>Estate data assistant</h1>
-  <p class="sub">A local LLM answering over the governed lakehouse. Switch identity to see row filters and masks apply to AI too.</p>
+  <p class="sub">A local LLM answering over the governed lakehouse. Switch identity to see row filters and masks apply to AI too.
+    Need a dashboard instead? <a href="/dashboard" target="_top">Prompt to dashboard →</a></p>
   <div class="bar">
     <select id="key" title="Identity">
 <!-- IDENTITIES -->
@@ -49,7 +51,10 @@ async function ask(text) {
     const r = await fetch('/v1/ai/ask', {method:'POST', headers:{'Content-Type':'application/json','X-API-Key':document.getElementById('key').value}, body: JSON.stringify({question:text})});
     const j = await r.json();
     if (!r.ok) throw new Error(j.detail || r.status);
-    let html = esc(j.answer) + `<div class="meta">as ${esc(j.user)} · ${j.steps.length} tool call(s)</div>`;
+    let html = esc(j.answer);
+    if (j.redirect === '/dashboard')  // a dashboard request: offer the page, carrying the question over
+      html += `<div><a class="go" href="/dashboard?prompt=${encodeURIComponent(text)}" target="_top">Open prompt to dashboard →</a></div>`;
+    html += `<div class="meta">as ${esc(j.user)} · ${j.steps.length} tool call(s)</div>`;
     for (const s of j.steps) {
       html += `<details><summary>${esc(s.tool)} ${esc(JSON.stringify(s.args))}</summary>`;
       if (s.sql) html += `<pre>${esc(s.sql)}</pre>`;

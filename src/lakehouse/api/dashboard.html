@@ -35,7 +35,8 @@
   <div class="intro">
     <h1>Prompt to dashboard</h1>
     <p class="sub">The local LLM picks metrics from a fixed catalog; code builds the SQL and runs it in Trino as the
-      selected identity, so row filters and column masks shape the dashboard.</p>
+      selected identity, so row filters and column masks shape the dashboard.
+      <a href="/">← Data assistant</a></p>
   </div>
   <form id="f">
     <select id="key" title="Identity">
@@ -139,6 +140,8 @@ async function publish() {
 }
 
 document.getElementById('f').onsubmit = e => { e.preventDefault(); if (q.value.trim()) build(q.value.trim()); };
+const handed = new URLSearchParams(location.search).get('prompt');  // from the chat page: fill it in, let the user build
+if (handed) q.value = handed.slice(0, 1000);
 document.querySelectorAll('.chips button').forEach(b => b.onclick = () => { q.value = b.textContent; build(b.textContent); });
 </script>
 </body>
