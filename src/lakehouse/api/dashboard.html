@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prompt to dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
+<style>
+  :root { --bg:#0f1117; --panel:#171a23; --line:#262a36; --text:#e6e8ef; --muted:#8a90a2; --accent:#4f8cff; --warn:#e0a83a; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f6f7fb; --panel:#fff; --line:#e3e6ee; --text:#151826; --muted:#5f6680; --warn:#a86b00; } }
+  * { box-sizing:border-box } body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--text) }
+  main { max-width:1200px; margin:0 auto; padding:24px 16px 48px }
+  body.embed main { padding-top:12px } body.embed .intro { display:none }
+  h1 { font-size:20px; margin:0 0 4px } h2 { font-size:18px; margin:0 } p.sub { color:var(--muted); margin:0 0 16px }
+  form { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px } form input { flex:1; min-width:240px }
+  select, input, button { font:inherit; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px }
+  button { background:var(--accent); border:0; color:#fff; cursor:pointer } button:disabled { opacity:.5; cursor:default }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px }
+  .chips button { background:var(--panel); color:var(--text); border:1px solid var(--line); font-size:13px }
+  .head { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin:8px 0 }
+  .meta { color:var(--muted); font-size:12px } .summary { margin:8px 0 16px; max-width:900px }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:12px; margin-bottom:12px }
+  .kpi, .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px }
+  .kpi .v { font-size:24px; font-weight:600; margin-top:4px } .kpi .l, .card .l { color:var(--muted); font-size:13px }
+  .charts { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 480px), 1fr)); gap:12px }
+  .card h3 { font-size:15px; margin:0 } .plot { height:300px } .tbl { max-height:300px; overflow:auto; margin-top:8px }
+  table { border-collapse:collapse; width:100%; font-size:13px } td, th { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line) }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums }
+  details { margin-top:12px } summary { cursor:pointer; color:var(--muted); font-size:13px }
+  pre { overflow:auto; font-size:12px; background:var(--bg); padding:8px; border-radius:6px; white-space:pre-wrap }
+  .issues li { color:var(--warn); font-size:13px } a { color:var(--accent) }
+</style>
+</head>
+<body>
+<main>
+  <div class="intro">
+    <h1>Prompt to dashboard</h1>
+    <p class="sub">The local LLM picks metrics from a fixed catalog; code builds the SQL and runs it in Trino as the
+      selected identity, so row filters and column masks shape the dashboard.</p>
+  </div>
+  <form id="f">
+    <select id="key" title="Identity">
+<!-- IDENTITIES -->
+    </select>
+    <input id="q" placeholder="Describe the dashboard you need…" autocomplete="off">
+    <button id="go">Build</button>
+  </form>
+  <div class="chips">
+    <button type="button">buatkan dashboard eksekutif summary dari data yang kita punya</button>
+    <button type="button">Weighbridge tonnage and trucks over the last 30 days</button>
+    <button type="button">Service tickets and SLA breaches by category</button>
+  </div>
+  <div id="out"></div>
+</main>
+<script>
+const out = document.getElementById('out'), q = document.getElementById('q'), go = document.getElementById('go');
+const key = () => document.getElementById('key').value;
+if (new URLSearchParams(location.search).has('embed')) document.body.classList.add('embed');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const compact = new Intl.NumberFormat('en-US', {notation:'compact', maximumFractionDigits:1});
+const plain = new Intl.NumberFormat('en-US', {maximumFractionDigits:1});
+function fmt(v, format, short) {
+  if (v === null || v === undefined) return '–';
+  if (typeof v !== 'number') return String(v);
+  if (format === 'idr') return 'IDR ' + compact.format(v);
+  if (format === 'hours') return plain.format(v) + ' h';
+  if (format === 'percent') return plain.format(v) + '%';
+  return short && Math.abs(v) >= 10000 ? compact.format(v) : plain.format(v);
+}
+const windowLabel = w => w === 'all_time' ? 'all time' : w.replaceAll('_', ' ');
+let charts = [], last = null;
+window.addEventListener('resize', () => charts.forEach(c => c.resize()));
+
+function plot(el, c) {
+  const chart = echarts.init(el, null, {renderer:'svg'}); charts.push(chart);
+  const text = css('--text'), muted = css('--muted'), line = css('--line');
+  const x = c.rows.map(r => String(r[0])), y = c.rows.map(r => r[1]);
+  const axis = {axisLabel:{color:muted}, axisLine:{lineStyle:{color:line}}, splitLine:{lineStyle:{color:line}}};
+  const tooltip = {trigger: c.chart === 'pie' ? 'item' : 'axis', valueFormatter: v => fmt(v, c.format)};
+  if (c.chart === 'pie') {
+    chart.setOption({tooltip, legend:{bottom:0, textStyle:{color:muted}, type:'scroll'},
+      series:[{type:'pie', radius:['40%','68%'], label:{color:text}, data:c.rows.map(r => ({name:String(r[0]), value:r[1]}))}]});
+    return;
+  }
+  chart.setOption({tooltip, color:[css('--accent')],
+    grid:{left:8, right:16, top:16, bottom:8, containLabel:true},
+    xAxis:{type:'category', data:x, ...axis, axisLabel:{color:muted, hideOverlap:true}},
+    yAxis:{type:'value', ...axis, axisLabel:{color:muted, formatter: v => fmt(v, c.format, true)}},
+    series:[{type:c.chart, data:y, smooth:c.chart === 'line', showSymbol:x.length < 40}]});
+}
+
+function table(c) {
+  return `<div class="tbl"><table><tr><th>${esc(c.x_label)}</th><th class="n">${esc(c.label)}</th></tr>` +
+    c.rows.map(r => `<tr><td>${esc(r[0])}</td><td class="n">${esc(fmt(r[1], c.format))}</td></tr>`).join('') + '</table></div>';
+}
+
+function render(d) {
+  charts.forEach(c => c.dispose()); charts = []; last = d;
+  let html = `<div class="head"><h2>${esc(d.title)}</h2><span><button id="pub" type="button">Create in Superset</button></span></div>`;
+  html += `<div class="meta">as ${esc(d.user)} · ${d.kpis.length} KPI(s), ${d.charts.length} chart(s)` +
+          (d.repaired ? ' · repaired once' : '') + (d.fallback ? ' · default dashboard (the request matched nothing)' : '') + `</div>`;
+  if (d.summary) html += `<p class="summary">${esc(d.summary)}</p>`;
+  html += '<div class="kpis">' + d.kpis.map(k => `<div class="kpi"><div class="l">${esc(k.label)} · ${esc(windowLabel(k.window))}</div>` +
+          `<div class="v">${esc(fmt(k.value, k.format))}</div></div>`).join('') + '</div>';
+  html += '<div class="charts">' + d.charts.map((c, i) => `<div class="card"><h3>${esc(c.title)}</h3>` +
+          `<div class="l">${esc(c.label)} by ${esc(c.x_label.toLowerCase())} · ${esc(windowLabel(c.window))}</div>` +
+          (c.chart === 'table' ? table(c) : `<div class="plot" id="p${i}"></div>`) + '</div>').join('') + '</div>';
+  if (d.issues.length) html += `<details open><summary>${d.issues.length} item(s) left out</summary><ul class="issues">` +
+          d.issues.map(s => `<li>${esc(s)}</li>`).join('') + '</ul></details>';
+  html += `<details><summary>Spec and SQL</summary><pre>${esc(JSON.stringify(d.spec, null, 2))}</pre>` +
+          [...d.kpis, ...d.charts].map(it => `<pre>${esc(it.sql)}</pre>`).join('') + '</details>';
+  out.innerHTML = html;
+  d.charts.forEach((c, i) => { if (c.chart !== 'table') plot(document.getElementById('p' + i), c); });
+  document.getElementById('pub').onclick = publish;
+}
+
+async function post(path, body) {
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json', 'X-API-Key':key()}, body:JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  // FastAPI validation errors (422) carry a list of {loc, msg}
+  const detail = Array.isArray(j.detail) ? j.detail.map(d => d.msg).join('; ') : j.detail;
+  if (!r.ok) throw new Error(detail || r.status);
+  return j;
+}
+
+async function build(prompt) {
+  go.disabled = true; out.innerHTML = '<p class="meta">Designing the dashboard and running its queries…</p>';
+  try { render(await post('/v1/ai/dashboard', {prompt})); }
+  catch (e) { out.innerHTML = `<p class="meta">Error: ${esc(e.message)}</p>`; }
+  go.disabled = false;
+}
+
+async function publish() {
+  const b = document.getElementById('pub'); b.disabled = true; b.textContent = 'Creating…';
+  try {
+    const j = await post('/v1/ai/dashboard/publish', {prompt:last.prompt, spec:last.spec});
+    b.parentElement.innerHTML = `<a href="${esc(j.url)}" target="_blank" rel="noopener">Open in Superset ↗</a>`;
+  } catch (e) { b.disabled = false; b.textContent = 'Create in Superset'; alert('Could not create it: ' + e.message); }
+}
+
+document.getElementById('f').onsubmit = e => { e.preventDefault(); if (q.value.trim()) build(q.value.trim()); };
+document.querySelectorAll('.chips button').forEach(b => b.onclick = () => { q.value = b.textContent; build(b.textContent); });
+</script>
+</body>
+</html>

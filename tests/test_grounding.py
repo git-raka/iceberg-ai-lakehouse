@@ -12,6 +12,8 @@ def test_numbers_understand_english_and_indonesian_formats():
     assert numbers("Rp 118.000.000")["118.000.000"] == 118_000_000
     assert numbers("1.250,5 ton")["1.250,5"] == 1250.5
     assert numbers("416.86 tons")["416.86"] == 416.86
+    assert numbers("rata-rata 47,1 jam")["47,1"] == 47.1  # a decimal comma, not 471
+    assert numbers("12,75%")["12,75"] == 12.75
     assert numbers("3 tenants") == {}  # small counts are not checked
 
 

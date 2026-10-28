@@ -5,12 +5,14 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
+import requests
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from trino.exceptions import TrinoUserError
 
-from ..ai import agent, text2sql, vectors
+from .. import superset_setup
+from ..ai import agent, dashboard, text2sql, vectors
 from ..ai.trino_client import query
 from ..settings import settings
 
@@ -39,6 +41,14 @@ class Question(BaseModel):
 
 class SQL(BaseModel):
     sql: str = Field(min_length=6, max_length=5000)
+
+
+class DashboardPrompt(BaseModel):
+    prompt: str = Field(min_length=3, max_length=1000)
+
+
+class DashboardSpec(DashboardPrompt):
+    spec: dict
 
 
 @app.get("/health")
@@ -98,11 +108,50 @@ def ai_ask(body: Question, user: str = Depends(identity)) -> dict:
     return agent.ask(body.question, user)
 
 
-@app.get("/", response_class=HTMLResponse)
-def chat_page() -> str:
-    """The demo chat. Its identity menu carries the non-admin API keys from .env, which is why every port is
-    published on 127.0.0.1 only; do not expose this page."""
+@app.post("/v1/ai/dashboard")
+def ai_dashboard(body: DashboardPrompt, user: str = Depends(identity)) -> dict:
+    """Prompt to dashboard: the LLM picks catalog metrics, code compiles and runs them in Trino as the caller."""
+    return dashboard.generate(body.prompt, user)
+
+
+@app.post("/v1/ai/dashboard/publish")
+def ai_dashboard_publish(body: DashboardSpec, user: str = Depends(identity)) -> dict:
+    """Create the dashboard in Superset. The spec is compiled, checked and run again as the caller (nothing else
+    from the browser is trusted), and Superset gets a database connection for the caller's identity, so its row
+    filters and column masks still apply there."""
+    if user == "admin" or user.startswith("vendor_"):
+        # admin would get an unfiltered connection in Superset; external parties use the share API, not Superset
+        raise HTTPException(403, f"{user} cannot publish dashboards to Superset")
+    dash = dashboard.build(body.spec, user)
+    if not dash["kpis"] and not dash["charts"]:
+        raise HTTPException(400, "nothing in this spec produced data: " + "; ".join(dash["issues"][:6]))
+    dash["prompt"] = body.prompt
+    try:
+        return superset_setup.publish(dash, user, summary=lambda: dashboard.summarize(body.prompt, dash, user))
+    except (requests.RequestException, RuntimeError) as e:
+        raise HTTPException(502, f"Superset: {e}") from e
+
+
+# the demo pages may only be framed by the Superset dashboard on this machine
+FRAME_ANCESTORS = {"Content-Security-Policy": "frame-ancestors 'self' http://localhost:8088 http://127.0.0.1:8088"}
+
+
+def page(name: str) -> HTMLResponse:
+    """A demo page. Its identity menu carries the non-admin API keys from .env, which is why every port is
+    published on 127.0.0.1 only; do not expose these pages."""
     options = "\n".join(f'      <option value="{html.escape(key)}">{html.escape(user)}</option>'
                         for key, user in settings().api_keys.items()
                         if user != "admin" and not user.startswith("vendor_"))
-    return (Path(__file__).with_name("chat.html")).read_text(encoding="utf-8").replace("<!-- IDENTITIES -->", options)
+    body = (Path(__file__).with_name(name)).read_text(encoding="utf-8").replace("<!-- IDENTITIES -->", options)
+    return HTMLResponse(body, headers=FRAME_ANCESTORS)
+
+
+@app.get("/", response_class=HTMLResponse)
+def chat_page() -> HTMLResponse:
+    return page("chat.html")
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard_page() -> HTMLResponse:
+    """Prompt box and ECharts renderer for /v1/ai/dashboard; `?embed=1` hides the heading for the Superset panel."""
+    return page("dashboard.html")
